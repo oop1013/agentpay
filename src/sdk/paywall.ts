@@ -4,7 +4,8 @@ import { redis } from "../lib/redis";
 import { Service, UsageRecord, UsageStatus } from "../lib/types";
 import { normalizeAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
-import { verifyX402Proof } from "../lib/x402";
+import { verifyX402Proof, parseX402Proof } from "../lib/x402";
+import { settlePayment } from "../lib/settlement";
 
 const X402_PAYMENT_HEADER = "x-402-payment";
 const X402_CALLER_HEADER = "x-402-caller";
@@ -97,6 +98,32 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
+    // ── Step 3b: Submit on-chain settlement via receiveWithAuthorization ──
+    const parsedProof = parseX402Proof(paymentProof);
+    if (!parsedProof) {
+      res.status(402).json({ error: "Failed to re-parse payment proof for settlement" });
+      return;
+    }
+
+    const settlementResult = await settlePayment(parsedProof);
+
+    if (!settlementResult.success) {
+      // If settlement env vars are not set, we skip on-chain settlement (dev/test mode).
+      // If env vars ARE set but settlement failed, reject the request.
+      const isNotConfigured =
+        settlementResult.error?.includes("BASE_SEPOLIA_RPC_URL or PROVIDER_PRIVATE_KEY not set");
+
+      if (!isNotConfigured) {
+        res.status(402).json({
+          error: "On-chain payment settlement failed",
+          detail: settlementResult.error,
+        });
+        return;
+      }
+
+      console.warn("[agentpay] Settlement skipped:", settlementResult.error);
+    }
+
     // ── Step 4: Check authorization and spend cap ──
     const authData = await redis.hgetall(`auth:${callerWallet}:${serviceId}`);
     if (!authData || Object.keys(authData).length === 0) {
@@ -135,9 +162,11 @@ export function paywall(config: PaywallConfig) {
       providerWallet: service.providerWallet,
       ...breakdown,
       verified: true,
+      txHash: settlementResult.txHash,
     };
 
     // Hook into response finish to record usage
+    const txHash = settlementResult.txHash;
     res.on("finish", () => {
       const latencyMs = Date.now() - startTime;
       let status: UsageStatus = "success";
@@ -152,6 +181,7 @@ export function paywall(config: PaywallConfig) {
         breakdown,
         status,
         latencyMs,
+        txHash,
       }).catch((err) => {
         console.error("[agentpay] Failed to record usage:", err);
       });
@@ -168,10 +198,11 @@ interface RecordUsageParams {
   breakdown: ReturnType<typeof computeFeeBreakdown>;
   status: UsageStatus;
   latencyMs: number;
+  txHash?: `0x${string}`;
 }
 
 async function recordUsage(params: RecordUsageParams): Promise<void> {
-  const { serviceId, callerWallet, providerWallet, breakdown, status, latencyMs } = params;
+  const { serviceId, callerWallet, providerWallet, breakdown, status, latencyMs, txHash } = params;
   const now = new Date();
 
   const record: UsageRecord = {
@@ -185,6 +216,7 @@ async function recordUsage(params: RecordUsageParams): Promise<void> {
     status,
     latencyMs,
     timestamp: now.toISOString(),
+    ...(txHash ? { txHash } : {}),
   };
 
   const pipeline = redis.pipeline();
