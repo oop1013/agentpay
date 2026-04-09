@@ -61,16 +61,19 @@ app.use((req, res, next) => {
   return writeLimiter(req, res, next);
 });
 
-// Write endpoints — require API key auth
-app.post("/api/services", requireApiKey, servicesRouter);
-app.post("/api/wallets", requireApiKey, walletsRouter);
-app.post("/api/auth", requireApiKey, authRouter);
-app.delete("/api/auth/:callerWallet/:serviceId", requireApiKey, authRouter);
-
-// All methods (includes the public GETs above and any remaining routes)
-app.use("/api/services", servicesRouter);
-app.use("/api/wallets", walletsRouter);
-app.use("/api/auth", authRouter);
+// Write endpoints require API key; read endpoints are public
+app.use("/api/services", (req, res, next) => {
+  if (req.method === "POST") return requireApiKey(req, res, next);
+  next();
+}, servicesRouter);
+app.use("/api/wallets", (req, res, next) => {
+  if (req.method === "POST") return requireApiKey(req, res, next);
+  next();
+}, walletsRouter);
+app.use("/api/auth", (req, res, next) => {
+  if (req.method === "POST" || req.method === "DELETE") return requireApiKey(req, res, next);
+  next();
+}, authRouter);
 app.use("/api/pay", payRouter);
 app.use("/api/usage", usageRouter);
 app.use("/api/platform", platformRouter);
