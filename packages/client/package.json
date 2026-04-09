@@ -1,5 +1,5 @@
 {
-  "name": "@agentpay/client",
+  "name": "@agentpay88/client",
   "version": "0.1.0",
   "description": "AgentPay client — fetch wrapper that auto-pays 402 Payment Required responses",
   "main": "./dist/index.cjs",
@@ -19,6 +19,9 @@
   },
   "keywords": ["agentpay", "x402", "payments", "fetch", "agent"],
   "license": "ISC",
+  "dependencies": {
+    "viem": "^2.47.10"
+  },
   "devDependencies": {
     "@types/node": "^25.5.2",
     "tsup": "^8.3.0",
