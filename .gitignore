@@ -1,0 +1,21 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+.npmrc
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# TypeScript
+*.js.map
+
+# Vercel
+.vercel/
+.vercel
+
+# Claude Code state
+.claude/

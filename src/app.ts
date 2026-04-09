@@ -1,4 +1,6 @@
 import express from "express";
+import cors from "cors";
+import rateLimit from "express-rate-limit";
 import servicesRouter from "./api/services";
 import walletsRouter from "./api/wallets";
 import authRouter from "./api/auth";
@@ -10,7 +12,54 @@ import { paywall } from "./sdk/paywall";
 import { requireApiKey } from "./lib/auth-middleware";
 
 const app = express();
+
+// CORS
+const allowedOrigins = [
+  "https://agentpay.xyz",
+  "https://agentpay-phi.vercel.app",
+];
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      if (
+        process.env.NODE_ENV !== "production" &&
+        /^http:\/\/localhost(:\d+)?$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: true,
+  })
+);
+
+// Rate limiting — write: 100 req/min, read: 300 req/min
+const writeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Rate limit exceeded" },
+});
+
+const readLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Rate limit exceeded" },
+});
+
 app.use(express.json());
+
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD") {
+    return readLimiter(req, res, next);
+  }
+  return writeLimiter(req, res, next);
+});
 
 // Write endpoints — require API key auth
 app.post("/api/services", requireApiKey, servicesRouter);
