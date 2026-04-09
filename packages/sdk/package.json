@@ -1,0 +1,36 @@
+{
+  "name": "@agentpay/sdk",
+  "version": "0.1.0",
+  "description": "AgentPay server-side SDK — Express middleware for paid API endpoints",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "keywords": ["agentpay", "x402", "payments", "express", "middleware"],
+  "license": "ISC",
+  "peerDependencies": {
+    "express": ">=4.0.0"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.37.0",
+    "viem": "^2.47.10",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.2",
+    "tsup": "^8.3.0",
+    "typescript": "^6.0.2"
+  }
+}

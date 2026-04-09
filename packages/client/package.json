@@ -1,0 +1,27 @@
+{
+  "name": "@agentpay/client",
+  "version": "0.1.0",
+  "description": "AgentPay client — fetch wrapper that auto-pays 402 Payment Required responses",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "keywords": ["agentpay", "x402", "payments", "fetch", "agent"],
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "tsup": "^8.3.0",
+    "typescript": "^6.0.2"
+  }
+}
