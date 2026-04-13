@@ -15,6 +15,7 @@
 import { verifyTypedData } from "viem";
 import { baseSepolia } from "viem/chains";
 import { isValidAddress, normalizeAddress } from "./addresses";
+import { redis } from "./redis";
 
 // USDC contract on Base Sepolia
 export const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
@@ -111,6 +112,7 @@ export function parseX402Proof(proof: string): X402PaymentProof | null {
  *  5. Amount matches expected service price (integer micro-USDC)
  *  6. Validity window covers current time
  *  7. EIP-712 signature is valid and recovers to `from`
+ *  8. Nonce has not been used before (replay protection via Redis SET NX)
  *
  * @param proof        Raw proof string (base64 or JSON)
  * @param expectedAmount  Expected amount in micro-USDC (integer)
@@ -211,6 +213,15 @@ export async function verifyX402Proof(
       valid: false,
       error: `Signature verification error: ${(err as Error).message}`,
     };
+  }
+
+  // 7. Replay protection: atomically mark the nonce as used via SET NX.
+  // TTL = validBefore - now + 60s buffer, so the key expires after the proof window closes.
+  const nonceKey = `used_nonce:${from}:${parsed.nonce}`;
+  const ttl = validBefore - nowSec + 60;
+  const claimed = await redis.set(nonceKey, "1", { nx: true, ex: ttl });
+  if (claimed === null) {
+    return { valid: false, error: "Payment proof has already been used (nonce replay)" };
   }
 
   return {

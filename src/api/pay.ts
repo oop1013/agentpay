@@ -3,9 +3,10 @@ import { z } from "zod";
 import crypto from "crypto";
 import { redis } from "../lib/redis";
 import { Service, UsageRecord } from "../lib/types";
-import { normalizeAddress } from "../lib/addresses";
+import { normalizeAddress, isValidAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
 import { verifyX402Proof } from "../lib/x402";
+import logger from "../lib/logger";
 
 const router = Router();
 
@@ -25,6 +26,10 @@ router.post("/verify", async (req: Request, res: Response) => {
   }
 
   const { serviceId, paymentProof } = parsed.data;
+  if (!isValidAddress(parsed.data.callerWallet)) {
+    res.status(400).json({ error: "Invalid callerWallet address format" });
+    return;
+  }
   const callerWallet = normalizeAddress(parsed.data.callerWallet);
 
   // Price always comes from the Service record, never from the client
@@ -93,6 +98,15 @@ router.post("/verify", async (req: Request, res: Response) => {
 
   const breakdown = computeFeeBreakdown(grossAmount, Number(service.platformFeeBps));
 
+  logger.info("payment.verify", {
+    serviceId,
+    callerWallet,
+    providerWallet: service.providerWallet,
+    grossAmount: breakdown.grossAmount,
+    providerNet: breakdown.providerNet,
+    platformFee: breakdown.platformFee,
+  });
+
   res.json({
     verified: true,
     serviceId,
@@ -117,7 +131,22 @@ router.post("/record", async (req: Request, res: Response) => {
   }
 
   const { serviceId, status, latencyMs } = parsed.data;
+  if (!isValidAddress(parsed.data.callerWallet)) {
+    res.status(400).json({ error: "Invalid callerWallet address format" });
+    return;
+  }
   const callerWallet = normalizeAddress(parsed.data.callerWallet);
+
+  // Idempotency: if the caller supplies an Idempotency-Key, replay the cached response.
+  const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+  if (idempotencyKey) {
+    const cacheKey = `idempotency:record:${idempotencyKey}`;
+    const cached = await redis.get(cacheKey) as string | null;
+    if (cached) {
+      res.status(201).json(JSON.parse(cached));
+      return;
+    }
+  }
 
   // Price and provider wallet always come from the Service record
   const serviceData = await redis.hgetall(`service:${serviceId}`);
@@ -127,6 +156,19 @@ router.post("/record", async (req: Request, res: Response) => {
   }
 
   const service = serviceData as unknown as Service;
+
+  // Verify authorization exists and is still active before recording spend.
+  const authData = await redis.hgetall(`auth:${callerWallet}:${serviceId}`);
+  if (!authData || Object.keys(authData).length === 0) {
+    res.status(403).json({ error: "No authorization found for this caller and service" });
+    return;
+  }
+  const authStatus = (authData as Record<string, unknown>).status as string;
+  if (authStatus !== "active") {
+    res.status(403).json({ error: `Authorization is ${authStatus}` });
+    return;
+  }
+
   const grossAmount = Number(service.pricePerCall);
   const providerWallet = service.providerWallet;
   const breakdown = computeFeeBreakdown(grossAmount, Number(service.platformFeeBps));
@@ -181,7 +223,31 @@ router.post("/record", async (req: Request, res: Response) => {
   pipeline.hincrby("platform:stats", "totalFees", breakdown.platformFee);
   pipeline.hincrby("platform:stats", "totalCalls", 1);
 
-  await pipeline.exec();
+  const pipelineResults = await pipeline.exec();
+
+  // Verify pipeline succeeded — all operations must return a non-null result.
+  if (!pipelineResults || pipelineResults.some((r) => r === null || r === undefined)) {
+    res.status(500).json({ error: "Usage recording failed: storage write error" });
+    return;
+  }
+
+  // Cache response for idempotency replay (24h TTL).
+  if (idempotencyKey) {
+    const cacheKey = `idempotency:record:${idempotencyKey}`;
+    await redis.set(cacheKey, JSON.stringify(record), { ex: 86400 });
+  }
+
+  logger.info("payment.record", {
+    recordId: record.id,
+    serviceId: record.serviceId,
+    callerWallet: record.callerWallet,
+    providerWallet: record.providerWallet,
+    grossAmount: record.grossAmount,
+    providerNet: record.providerNet,
+    platformFee: record.platformFee,
+    status: record.status,
+    latencyMs: record.latencyMs,
+  });
 
   res.status(201).json(record);
 });
