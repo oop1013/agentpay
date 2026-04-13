@@ -3,8 +3,13 @@ import { Request, Response, NextFunction } from "express";
 export function requireApiKey(req: Request, res: Response, next: NextFunction): void {
   const configuredKey = process.env.AGENTPAY_API_KEY;
 
-  // Dev mode: no key configured, allow all requests
+  // If no key is configured: allow in dev/test, deny in production.
+  // This prevents accidental open write access on misconfigured production deployments.
   if (!configuredKey) {
+    if (process.env.NODE_ENV === "production") {
+      res.status(503).json({ error: "Service misconfigured: AGENTPAY_API_KEY is not set. Write access is disabled." });
+      return;
+    }
     next();
     return;
   }
