@@ -17,6 +17,8 @@ const app = express();
 const allowedOrigins = [
   "https://agentpay.xyz",
   "https://agentpay-phi.vercel.app",
+  // AgentMart origin — set AGENTMART_ORIGIN in env to allow cross-service calls
+  ...(process.env.AGENTMART_ORIGIN ? [process.env.AGENTMART_ORIGIN] : []),
 ];
 app.use(
   cors({
