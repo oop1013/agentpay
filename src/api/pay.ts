@@ -5,7 +5,7 @@ import { redis } from "../lib/redis";
 import { Service, UsageRecord } from "../lib/types";
 import { normalizeAddress, isValidAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
-import { verifyX402Proof } from "../lib/x402";
+import { verifyX402Proof, parseX402Proof, consumeX402Nonce } from "../lib/x402";
 import logger from "../lib/logger";
 
 const router = Router();
@@ -120,6 +120,8 @@ const recordUsageSchema = z.object({
   callerWallet: z.string().min(1),
   status: z.enum(["success", "failed", "timeout"]),
   latencyMs: z.number().int().nonnegative(),
+  /** x402 payment proof — server derives nonce and validBefore from this; never trust client-supplied nonce fields */
+  paymentProof: z.string().min(1),
 });
 
 // POST /api/pay/record — record usage after a verified payment
@@ -130,27 +132,55 @@ router.post("/record", async (req: Request, res: Response) => {
     return;
   }
 
-  const { serviceId, status, latencyMs } = parsed.data;
+  const { serviceId, status, latencyMs, paymentProof } = parsed.data;
   if (!isValidAddress(parsed.data.callerWallet)) {
     res.status(400).json({ error: "Invalid callerWallet address format" });
     return;
   }
   const callerWallet = normalizeAddress(parsed.data.callerWallet);
 
-  // Idempotency: if the caller supplies an Idempotency-Key, replay the cached response.
+  // Server-derive nonce and validBefore from the payment proof — never trust client-supplied nonce fields.
+  const parsedProof = parseX402Proof(paymentProof);
+  if (!parsedProof) {
+    res.status(400).json({ error: "Invalid paymentProof — cannot derive nonce for replay protection" });
+    return;
+  }
+  const paymentNonce = parsedProof.nonce;
+  const paymentValidBefore = Number(parsedProof.validBefore);
+
+  // Idempotency: atomic claim/finalize flow to prevent parallel duplicate processing.
+  // Key is scoped to caller+service to prevent cross-caller key collisions.
   const idempotencyKey = req.headers["idempotency-key"] as string | undefined;
+  let idempotencyCacheKey: string | undefined;
   if (idempotencyKey) {
-    const cacheKey = `idempotency:record:${idempotencyKey}`;
-    const cached = await redis.get(cacheKey) as string | null;
-    if (cached) {
-      res.status(201).json(JSON.parse(cached));
+    idempotencyCacheKey = `idempotency:record:${callerWallet}:${serviceId}:${idempotencyKey}`;
+    // Atomically try to claim the slot (SET NX "pending").
+    const claimed = await redis.set(idempotencyCacheKey, "pending", { nx: true, ex: 86400 });
+    if (claimed === null) {
+      // Already claimed — check whether it's finalized or still in-flight.
+      const existing = await redis.get(idempotencyCacheKey) as string | null;
+      if (existing && existing !== "pending") {
+        res.status(201).json(JSON.parse(existing));
+        return;
+      }
+      // Parallel duplicate still in flight — tell caller to retry.
+      res.status(409).json({ error: "Duplicate request in progress. Retry after a moment." });
       return;
     }
+    // claimed !== null: we own the slot, proceed to record.
   }
+
+  // Release the idempotency slot on any non-success exit so retries are not wedged for 24h.
+  const releaseSlot = async () => {
+    if (idempotencyCacheKey) {
+      await redis.del(idempotencyCacheKey);
+    }
+  };
 
   // Price and provider wallet always come from the Service record
   const serviceData = await redis.hgetall(`service:${serviceId}`);
   if (!serviceData || Object.keys(serviceData).length === 0) {
+    await releaseSlot();
     res.status(404).json({ error: "Service not found" });
     return;
   }
@@ -160,11 +190,13 @@ router.post("/record", async (req: Request, res: Response) => {
   // Verify authorization exists and is still active before recording spend.
   const authData = await redis.hgetall(`auth:${callerWallet}:${serviceId}`);
   if (!authData || Object.keys(authData).length === 0) {
+    await releaseSlot();
     res.status(403).json({ error: "No authorization found for this caller and service" });
     return;
   }
   const authStatus = (authData as Record<string, unknown>).status as string;
   if (authStatus !== "active") {
+    await releaseSlot();
     res.status(403).json({ error: `Authorization is ${authStatus}` });
     return;
   }
@@ -186,6 +218,15 @@ router.post("/record", async (req: Request, res: Response) => {
     latencyMs,
     timestamp: now.toISOString(),
   };
+
+  // Consume the payment nonce BEFORE writing any state — fail closed on replay.
+  // If the nonce is already consumed (replayed proof), reject now before any writes.
+  const nonceAccepted = await consumeX402Nonce(callerWallet, paymentNonce, paymentValidBefore);
+  if (!nonceAccepted) {
+    await releaseSlot();
+    res.status(409).json({ error: "Payment proof already used: nonce has been consumed" });
+    return;
+  }
 
   const pipeline = redis.pipeline();
 
@@ -227,14 +268,14 @@ router.post("/record", async (req: Request, res: Response) => {
 
   // Verify pipeline succeeded — all operations must return a non-null result.
   if (!pipelineResults || pipelineResults.some((r) => r === null || r === undefined)) {
+    await releaseSlot();
     res.status(500).json({ error: "Usage recording failed: storage write error" });
     return;
   }
 
-  // Cache response for idempotency replay (24h TTL).
-  if (idempotencyKey) {
-    const cacheKey = `idempotency:record:${idempotencyKey}`;
-    await redis.set(cacheKey, JSON.stringify(record), { ex: 86400 });
+  // Finalize idempotency slot with actual result (replaces "pending" marker).
+  if (idempotencyCacheKey) {
+    await redis.set(idempotencyCacheKey, JSON.stringify(record), { ex: 86400 });
   }
 
   logger.info("payment.record", {
