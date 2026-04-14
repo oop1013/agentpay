@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Request, Response } from "express";
 
 // ── Hoist mock objects so factories can reference them ────────────────────────
-const { redisMock, parseProofMock, consumeNonceMock } = vi.hoisted(() => {
+const { redisMock, parseProofMock, verifyProofMock, consumeNonceMock } = vi.hoisted(() => {
   const redisMock = {
     set: vi.fn(),
     get: vi.fn(),
@@ -23,14 +23,15 @@ const { redisMock, parseProofMock, consumeNonceMock } = vi.hoisted(() => {
     pipeline: vi.fn(),
   };
   const parseProofMock = vi.fn();
+  const verifyProofMock = vi.fn();
   const consumeNonceMock = vi.fn().mockResolvedValue(true);
-  return { redisMock, parseProofMock, consumeNonceMock };
+  return { redisMock, parseProofMock, verifyProofMock, consumeNonceMock };
 });
 
 vi.mock("../../lib/redis", () => ({ redis: redisMock }));
 
 vi.mock("../../lib/x402", () => ({
-  verifyX402Proof: vi.fn(),
+  verifyX402Proof: verifyProofMock,
   parseX402Proof: parseProofMock,
   consumeX402Nonce: consumeNonceMock,
 }));
@@ -132,6 +133,14 @@ describe("/api/pay/record — server-derived nonce from paymentProof", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     parseProofMock.mockReturnValue(validParsedProof());
+    verifyProofMock.mockResolvedValue({
+      valid: true,
+      from: CALLER_WALLET.toLowerCase(),
+      to: PROVIDER_WALLET.toLowerCase(),
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
     redisMock.hgetall.mockImplementation(async (key: string) => {
       if (key.startsWith("service:")) return serviceData();
       if (key.startsWith("auth:")) return authData();
@@ -223,6 +232,14 @@ describe("/api/pay/record — atomic idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     parseProofMock.mockReturnValue(validParsedProof());
+    verifyProofMock.mockResolvedValue({
+      valid: true,
+      from: CALLER_WALLET.toLowerCase(),
+      to: PROVIDER_WALLET.toLowerCase(),
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
     redisMock.hgetall.mockImplementation(async (key: string) => {
       if (key.startsWith("service:")) return serviceData();
       if (key.startsWith("auth:")) return authData();
@@ -279,6 +296,14 @@ describe("/api/pay/record — idempotency slot released on non-success exits", (
   beforeEach(() => {
     vi.clearAllMocks();
     parseProofMock.mockReturnValue(validParsedProof());
+    verifyProofMock.mockResolvedValue({
+      valid: true,
+      from: CALLER_WALLET.toLowerCase(),
+      to: PROVIDER_WALLET.toLowerCase(),
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
     redisMock.del.mockResolvedValue(1);
     // Claim the slot successfully on every test
     redisMock.set.mockResolvedValue("OK");
@@ -361,5 +386,128 @@ describe("/api/pay/record — idempotency slot released on non-success exits", (
 
     expect(ctx.statusCode).toBe(201);
     expect(redisMock.del).not.toHaveBeenCalled();
+  });
+});
+
+describe("/api/pay/record — proof verification (forged proof rejection)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    parseProofMock.mockReturnValue(validParsedProof());
+    // Default: valid proof — individual tests override for forgery scenarios.
+    verifyProofMock.mockResolvedValue({
+      valid: true,
+      from: CALLER_WALLET.toLowerCase(),
+      to: PROVIDER_WALLET.toLowerCase(),
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
+    redisMock.hgetall.mockImplementation(async (key: string) => {
+      if (key.startsWith("service:")) return serviceData();
+      if (key.startsWith("auth:")) return authData();
+      return null;
+    });
+    redisMock.pipeline.mockReturnValue(buildPipelineExec());
+    redisMock.set.mockResolvedValue("OK");
+    redisMock.get.mockResolvedValue(null);
+    redisMock.del.mockResolvedValue(1);
+    consumeNonceMock.mockResolvedValue(true);
+  });
+
+  it("rejects proof with wrong signer (from != callerWallet) with 402", async () => {
+    verifyProofMock.mockResolvedValueOnce({
+      valid: true,
+      from: "0xdeadbeef00000000000000000000000000000001",
+      to: PROVIDER_WALLET.toLowerCase(),
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(402);
+    expect((ctx.body as any)?.error).toMatch(/[Ss]igner|[Cc]aller/);
+    // No writes — pipeline must not be called
+    expect(redisMock.pipeline).not.toHaveBeenCalled();
+    expect(consumeNonceMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects proof with wrong recipient (to != providerWallet) with 402", async () => {
+    verifyProofMock.mockResolvedValueOnce({
+      valid: false,
+      error: "Payment recipient mismatch: proof pays 0xwrong, expected 0x7099...",
+    });
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(402);
+    expect((ctx.body as any)?.error).toMatch(/[Vv]erif/);
+    expect(redisMock.pipeline).not.toHaveBeenCalled();
+    expect(consumeNonceMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects proof with wrong amount (!= service.pricePerCall) with 402", async () => {
+    verifyProofMock.mockResolvedValueOnce({
+      valid: false,
+      error: "Amount mismatch: proof has 9999 micro-USDC, expected 1000",
+    });
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(402);
+    expect((ctx.body as any)?.error).toMatch(/[Vv]erif/);
+    expect(redisMock.pipeline).not.toHaveBeenCalled();
+    expect(consumeNonceMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT consume nonce when proof verification fails (fail closed)", async () => {
+    verifyProofMock.mockResolvedValueOnce({
+      valid: false,
+      error: "EIP-712 signature is invalid",
+    });
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody(), { "idempotency-key": "key-forgery" });
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(402);
+    expect(consumeNonceMock).not.toHaveBeenCalled();
+    // Slot must be released on the verification failure exit
+    expect(redisMock.del).toHaveBeenCalledWith(expect.stringContaining("idempotency:record:"));
+  });
+
+  it("calls verifyX402Proof with server-authoritative grossAmount and providerWallet", async () => {
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(verifyProofMock).toHaveBeenCalledWith(
+      PAYMENT_PROOF,
+      1000,          // service.pricePerCall from Redis — never client-supplied
+      PROVIDER_WALLET // service.providerWallet from Redis — never client-supplied
+    );
+    expect(ctx.statusCode).toBe(201);
   });
 });

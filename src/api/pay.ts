@@ -203,6 +203,27 @@ router.post("/record", async (req: Request, res: Response) => {
 
   const grossAmount = Number(service.pricePerCall);
   const providerWallet = service.providerWallet;
+
+  // Cryptographic proof verification — same invariants as /api/pay/verify.
+  // Must be called BEFORE consuming the nonce so that forged proofs fail closed
+  // without burning a legitimate nonce.
+  const x402Result = await verifyX402Proof(paymentProof, grossAmount, providerWallet);
+  if (!x402Result.valid) {
+    await releaseSlot();
+    res.status(402).json({ error: "Payment proof verification failed", detail: x402Result.error });
+    return;
+  }
+  // Confirm the verified signer matches the declared callerWallet.
+  if (x402Result.from !== callerWallet) {
+    await releaseSlot();
+    res.status(402).json({
+      error: "Proof signer does not match callerWallet",
+      proofFrom: x402Result.from,
+      callerWallet,
+    });
+    return;
+  }
+
   const breakdown = computeFeeBreakdown(grossAmount, Number(service.platformFeeBps));
 
   const now = new Date();
