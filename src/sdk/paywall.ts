@@ -4,7 +4,7 @@ import { redis } from "../lib/redis";
 import { Service, UsageRecord, UsageStatus } from "../lib/types";
 import { normalizeAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
-import { verifyX402Proof, parseX402Proof } from "../lib/x402";
+import { verifyX402Proof, parseX402Proof, consumeX402Nonce } from "../lib/x402";
 import { settlePayment } from "../lib/settlement";
 
 const X402_PAYMENT_HEADER = "x-402-payment";
@@ -98,33 +98,14 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
-    // ── Step 3b: Submit on-chain settlement via receiveWithAuthorization ──
+    // Parse proof (needed for settlement later)
     const parsedProof = parseX402Proof(paymentProof);
     if (!parsedProof) {
       res.status(402).json({ error: "Failed to re-parse payment proof for settlement" });
       return;
     }
 
-    const settlementResult = await settlePayment(parsedProof);
-
-    if (!settlementResult.success) {
-      // If settlement env vars are not set, we skip on-chain settlement (dev/test mode).
-      // If env vars ARE set but settlement failed, reject the request.
-      const isNotConfigured =
-        settlementResult.error?.includes("BASE_SEPOLIA_RPC_URL or PROVIDER_PRIVATE_KEY not set");
-
-      if (!isNotConfigured) {
-        res.status(402).json({
-          error: "On-chain payment settlement failed",
-          detail: settlementResult.error,
-        });
-        return;
-      }
-
-      console.warn("[agentpay] Settlement skipped:", settlementResult.error);
-    }
-
-    // ── Step 4: Check authorization and spend cap ──
+    // ── Step 4: Check authorization and spend cap BEFORE settling on-chain ──
     const authData = await redis.hgetall(`auth:${callerWallet}:${serviceId}`);
     if (!authData || Object.keys(authData).length === 0) {
       res.status(403).json({ error: "No authorization found for this caller and service" });
@@ -152,7 +133,40 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
-    // ── Step 5: Payment verified — allow request through ──
+    // ── Step 5: Submit on-chain settlement via receiveWithAuthorization ──
+    // Auth and spend cap verified — safe to charge on-chain now.
+    const settlementResult = await settlePayment(parsedProof);
+
+    if (!settlementResult.success) {
+      // If settlement env vars are not set, we skip on-chain settlement (dev/test mode).
+      // If env vars ARE set but settlement failed, reject the request.
+      const isNotConfigured =
+        settlementResult.error?.includes("BASE_SEPOLIA_RPC_URL or PROVIDER_PRIVATE_KEY not set");
+
+      if (!isNotConfigured) {
+        res.status(402).json({
+          error: "On-chain payment settlement failed",
+          detail: settlementResult.error,
+        });
+        return;
+      }
+
+      console.warn("[agentpay] Settlement skipped:", settlementResult.error);
+    }
+
+    // ── Step 6: Consume nonce to prevent replay attacks ──
+    // Must happen after all validation passes (settlement + auth + spend cap) and before next().
+    const nonceConsumed = await consumeX402Nonce(
+      callerWallet,
+      x402Result.nonce!,
+      x402Result.validBefore!
+    );
+    if (!nonceConsumed) {
+      res.status(402).json({ error: "Payment proof already used — replay rejected" });
+      return;
+    }
+
+    // ── Step 7: Payment verified — allow request through ──
     const breakdown = computeFeeBreakdown(grossAmount, Number(service.platformFeeBps));
 
     // Attach payment context for downstream handlers if needed
