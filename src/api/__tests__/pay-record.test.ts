@@ -511,3 +511,64 @@ describe("/api/pay/record — proof verification (forged proof rejection)", () =
     expect(ctx.statusCode).toBe(201);
   });
 });
+
+describe("/api/pay/record — spend-cap enforcement", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    parseProofMock.mockReturnValue(validParsedProof());
+    verifyProofMock.mockResolvedValue({
+      valid: true,
+      from: CALLER_WALLET.toLowerCase(),
+      to: PROVIDER_WALLET.toLowerCase(),
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
+    redisMock.set.mockResolvedValue("OK");
+    redisMock.get.mockResolvedValue(null);
+    redisMock.del.mockResolvedValue(1);
+    consumeNonceMock.mockResolvedValue(true);
+    redisMock.pipeline.mockReturnValue(buildPipelineExec());
+  });
+
+  it("rejects with 403 when spent + pricePerCall exceeds spendCap, before nonce consumption", async () => {
+    // spendCap = 1000, spent = 500, pricePerCall = 1000 → 1500 > 1000 → over cap
+    redisMock.hgetall.mockImplementation(async (key: string) => {
+      if (key.startsWith("service:")) return serviceData(); // pricePerCall = 1000
+      if (key.startsWith("auth:")) return { status: "active", spendCap: "1000", spent: "500" };
+      return null;
+    });
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(403);
+    expect((ctx.body as any)?.error).toMatch(/[Ss]pend cap/);
+    // Nonce must NOT be consumed — spend-cap rejection must happen before nonce burn.
+    expect(consumeNonceMock).not.toHaveBeenCalled();
+    // No pipeline writes.
+    expect(redisMock.pipeline).not.toHaveBeenCalled();
+  });
+
+  it("accepts when spent + pricePerCall is exactly at spendCap", async () => {
+    // spendCap = 1000, spent = 0, pricePerCall = 1000 → 1000 <= 1000 → allowed
+    redisMock.hgetall.mockImplementation(async (key: string) => {
+      if (key.startsWith("service:")) return serviceData(); // pricePerCall = 1000
+      if (key.startsWith("auth:")) return { status: "active", spendCap: "1000", spent: "0" };
+      return null;
+    });
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(201);
+  });
+});

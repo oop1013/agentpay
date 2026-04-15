@@ -204,6 +204,16 @@ router.post("/record", async (req: Request, res: Response) => {
   const grossAmount = Number(service.pricePerCall);
   const providerWallet = service.providerWallet;
 
+  // Enforce spend cap — mirrors the check in /api/pay/verify.
+  // Prevents a caller from skipping /verify and posting directly to /record to bypass the cap.
+  const spendCap = Number((authData as Record<string, unknown>).spendCap);
+  const spent = Number((authData as Record<string, unknown>).spent ?? 0);
+  if (spent + grossAmount > spendCap) {
+    await releaseSlot();
+    res.status(403).json({ error: "Spend cap exceeded", spendCap, spent, required: grossAmount });
+    return;
+  }
+
   // Cryptographic proof verification — same invariants as /api/pay/verify.
   // Must be called BEFORE consuming the nonce so that forged proofs fail closed
   // without burning a legitimate nonce.
