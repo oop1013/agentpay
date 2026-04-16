@@ -1,5 +1,16 @@
 export type ServiceStatus = "active" | "paused";
 export type WalletType = "human" | "agent" | "provider";
+
+/**
+ * Shared wallet identity contract — canonical shape used across AgentPay and AgentMart.
+ * AgentPay is the single source of truth; AgentMart reads/writes through AgentPay's API.
+ */
+export interface SharedWalletIdentity {
+  address: string;
+  type: WalletType;
+  displayName: string;
+  registeredAt: string; // ISO
+}
 export type UsageStatus = "success" | "failed" | "timeout";
 export type AuthorizationStatus = "active" | "paused" | "revoked";
 

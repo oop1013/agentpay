@@ -1,5 +1,5 @@
 {
-  "name": "@agentpay/sdk",
+  "name": "@agentpay88/sdk",
   "version": "0.1.0",
   "description": "AgentPay server-side SDK — Express middleware for paid API endpoints",
   "main": "./dist/index.cjs",

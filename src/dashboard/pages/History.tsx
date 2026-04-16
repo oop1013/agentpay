@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 
@@ -21,6 +22,7 @@ interface Service {
 }
 
 export default function History() {
+  const navigate = useNavigate();
   const { address, isConnected } = useAccount();
 
   const { data, isLoading } = useQuery({
@@ -59,9 +61,15 @@ export default function History() {
       {isLoading ? (
         <p className="text-gray-500 text-sm">Loading...</p>
       ) : !data?.records?.length ? (
-        <div className="text-gray-500 text-sm bg-white border rounded p-6 text-center">
-          <p className="font-medium mb-1">No usage history yet.</p>
-          <p>Records appear here after you make paid API calls via an AgentPay-protected service.</p>
+        <div className="bg-white border rounded p-8 text-center">
+          <p className="text-gray-700 font-medium mb-1">No usage history yet.</p>
+          <p className="text-gray-500 text-sm mb-4">Make your first paid API call to see records here.</p>
+          <button
+            onClick={() => navigate("/services")}
+            className="px-4 py-2 bg-gray-900 text-white rounded text-sm hover:bg-gray-700"
+          >
+            Browse Services
+          </button>
         </div>
       ) : (
         <table className="w-full bg-white border rounded text-sm">

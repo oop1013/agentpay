@@ -71,6 +71,10 @@ export interface X402VerifyResult {
   from?: string;
   to?: string;
   amount?: number;
+  /** Populated on valid: true — the proof nonce for caller-side consumption after settlement */
+  nonce?: string;
+  /** Populated on valid: true — validBefore seconds (unix) for TTL computation in consumeX402Nonce */
+  validBefore?: number;
 }
 
 /**
@@ -215,19 +219,38 @@ export async function verifyX402Proof(
     };
   }
 
-  // 7. Replay protection: atomically mark the nonce as used via SET NX.
-  // TTL = validBefore - now + 60s buffer, so the key expires after the proof window closes.
-  const nonceKey = `used_nonce:${from}:${parsed.nonce}`;
-  const ttl = validBefore - nowSec + 60;
-  const claimed = await redis.set(nonceKey, "1", { nx: true, ex: ttl });
-  if (claimed === null) {
-    return { valid: false, error: "Payment proof has already been used (nonce replay)" };
-  }
-
+  // Replay protection is intentionally NOT done here. verifyX402Proof() is a pure
+  // cryptographic check with no side effects. Callers that definitively accept/settle
+  // a payment must call consumeX402Nonce() afterward to mark the proof spent.
   return {
     valid: true,
     from,
     to,
     amount: proofAmount,
+    nonce: parsed.nonce,
+    validBefore,
   };
+}
+
+/**
+ * Atomically mark an x402 payment nonce as consumed (replay protection).
+ *
+ * Call this ONLY after a payment has been definitively accepted/settled — never during
+ * a preflight verify. Returns true if the nonce was freshly claimed, false if it had
+ * already been consumed (indicating a duplicate/replay).
+ *
+ * @param from          Payer wallet address (normalised hex)
+ * @param nonce         Proof nonce (hex bytes32) from X402VerifyResult
+ * @param validBefore   Proof validBefore timestamp (seconds) from X402VerifyResult
+ */
+export async function consumeX402Nonce(
+  from: string,
+  nonce: string,
+  validBefore: number
+): Promise<boolean> {
+  const nonceKey = `used_nonce:${from}:${nonce}`;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttl = Math.max(validBefore - nowSec + 60, 60); // at least 60s TTL
+  const claimed = await redis.set(nonceKey, "1", { nx: true, ex: ttl });
+  return claimed !== null;
 }

@@ -5,6 +5,7 @@ import Services from "./pages/Services";
 import Provider from "./pages/Provider";
 import History from "./pages/History";
 import Authorizations from "./pages/Authorizations";
+import Quickstart from "./pages/Quickstart";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -40,6 +41,7 @@ class ErrorBoundary extends React.Component<
 
 const navItems = [
   { to: "/", label: "Home" },
+  { to: "/quickstart", label: "Quickstart" },
   { to: "/services", label: "Services" },
   { to: "/provider", label: "Provider" },
   { to: "/history", label: "History" },
@@ -79,6 +81,7 @@ export default function App() {
             <Route path="/provider" element={<Provider />} />
             <Route path="/history" element={<History />} />
             <Route path="/authorizations" element={<Authorizations />} />
+            <Route path="/quickstart" element={<Quickstart />} />
           </Routes>
         </main>
       </div>

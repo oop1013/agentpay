@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import { useAccount } from "wagmi";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -12,6 +13,7 @@ interface Authorization {
 }
 
 export default function Authorizations() {
+  const navigate = useNavigate();
   const { address, isConnected } = useAccount();
   const queryClient = useQueryClient();
 
@@ -43,9 +45,15 @@ export default function Authorizations() {
       {isLoading ? (
         <p className="text-gray-500 text-sm">Loading...</p>
       ) : !data?.authorizations?.length ? (
-        <div className="text-gray-500 text-sm bg-white border rounded p-6 text-center">
-          <p className="font-medium mb-1">No authorizations yet.</p>
-          <p>Go to <strong>Services</strong> and click <strong>Authorize</strong> on a service to set a spend cap.</p>
+        <div className="bg-white border rounded p-8 text-center">
+          <p className="text-gray-700 font-medium mb-1">No authorizations yet.</p>
+          <p className="text-gray-500 text-sm mb-4">Authorize a service to set a spend cap and start making paid API calls.</p>
+          <button
+            onClick={() => navigate("/services")}
+            className="px-4 py-2 bg-gray-900 text-white rounded text-sm hover:bg-gray-700"
+          >
+            Browse Services
+          </button>
         </div>
       ) : (
         <table className="w-full bg-white border rounded text-sm">
