@@ -16,6 +16,11 @@ This document lists known limitations and friction points for Phase 1 of AgentPa
 
 **Workaround:** Leave `AGENTPAY_API_KEY` unset for local development. Document the key clearly for production deployments.
 
+### Demo service must be explicitly initialized
+**Friction:** The demo endpoint (`GET /api/demo/echo`) returns `{"error":"Service not configured"}` (HTTP 500) if `GET /api/demo/setup` has not been called first. The error message is clear but the required setup step is not immediately obvious. The in-memory mock doesn't persist across restarts, so `GET /api/demo/setup` must be called again each time the server restarts without Upstash credentials.
+
+**Workaround:** Always call `GET /api/demo/setup` before testing the demo endpoint. The quickstart guide covers this step.
+
 ### Authorization must be created before payment
 **Friction:** A caller wallet must have an active authorization record for each service before any payment can succeed. The 402 response does not explain this requirement — callers see a generic 402 and may not know to call `POST /api/auth` first.
 
