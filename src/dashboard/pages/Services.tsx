@@ -386,9 +386,9 @@ export default function Services() {
                         <div>
                           <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Integration</span>
                           <div className="mt-1 relative">
-                            <pre className="bg-gray-900 text-gray-100 rounded p-3 text-xs overflow-x-auto leading-relaxed">{`import { payFetch } from '@agentpay/client';\n\nconst res = await payFetch('${svc.endpoint}');`}</pre>
+                            <pre className="bg-gray-900 text-gray-100 rounded p-3 text-xs overflow-x-auto leading-relaxed">{`import { createAgentPayClient, createEIP712Signer } from '@agentpay88/client';\n\nconst signer = createEIP712Signer("0xYOUR_PRIVATE_KEY");\nconst client = createAgentPayClient({\n  callerWallet: "0xYOUR_WALLET_ADDRESS",\n  signPayment: signer,\n});\n\nconst res = await client.fetch('${svc.endpoint}');`}</pre>
                             <button
-                              onClick={() => copyToClipboard(`import { payFetch } from '@agentpay/client';\n\nconst res = await payFetch('${svc.endpoint}');`, `snippet-${svc.id}`)}
+                              onClick={() => copyToClipboard(`import { createAgentPayClient, createEIP712Signer } from '@agentpay88/client';\n\nconst signer = createEIP712Signer("0xYOUR_PRIVATE_KEY");\nconst client = createAgentPayClient({\n  callerWallet: "0xYOUR_WALLET_ADDRESS",\n  signPayment: signer,\n});\n\nconst res = await client.fetch('${svc.endpoint}');`, `snippet-${svc.id}`)}
                               className="absolute top-2 right-2 text-xs text-gray-400 hover:text-white border border-gray-600 rounded px-2 py-0.5"
                             >
                               {copiedId === `snippet-${svc.id}` ? "Copied!" : "Copy"}
