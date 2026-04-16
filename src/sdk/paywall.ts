@@ -121,24 +121,24 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
-    // ── Step 5: Consume nonce BEFORE reserving spend cap ──
-    // A replayed proof fails closed here without burning the caller's spend cap headroom.
+    // ── Step 5: Atomically reserve spend cap BEFORE nonce consumption ──
+    // Over-cap rejection leaves the proof/nonce untouched — caller can retry with the same proof.
+    const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
+    if (!withinCap) {
+      res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
+      return;
+    }
+
+    // ── Step 6: Consume nonce AFTER spend cap admission succeeds ──
+    // If the nonce is already consumed → release the reserved cap so headroom is restored.
     const nonceConsumed = await consumeX402Nonce(
       callerWallet,
       x402Result.nonce!,
       x402Result.validBefore!
     );
     if (!nonceConsumed) {
+      await atomicSpendCapRelease(authKey, grossAmount);
       res.status(402).json({ error: "Payment proof already used — replay rejected" });
-      return;
-    }
-
-    // ── Step 6: Atomically reserve spend cap AFTER nonce consumption ──
-    // Only a settlement failure can now leave the cap incremented without a committed
-    // on-chain payment — handled below with a release.
-    const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
-    if (!withinCap) {
-      res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
       return;
     }
 

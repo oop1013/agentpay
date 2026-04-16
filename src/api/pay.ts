@@ -242,22 +242,22 @@ router.post("/record", async (req: Request, res: Response) => {
     timestamp: now.toISOString(),
   };
 
-  // Consume the payment nonce BEFORE reserving spend cap — ensures a replayed proof
-  // fails closed without burning the caller's spend cap headroom.
-  const nonceAccepted = await consumeX402Nonce(callerWallet, paymentNonce, paymentValidBefore);
-  if (!nonceAccepted) {
-    await releaseSlot();
-    res.status(409).json({ error: "Payment proof already used: nonce has been consumed" });
-    return;
-  }
-
-  // Atomically reserve spend cap AFTER proof verification and nonce consumption.
-  // Placing the reservation here means only a pipeline write failure can leave
-  // the cap incremented without a committed record — handled below with a release.
+  // Atomically reserve spend cap AFTER proof verification, BEFORE nonce consumption.
+  // Over-cap rejection leaves the proof/nonce untouched — caller can retry with the same proof.
   const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
   if (!withinCap) {
     await releaseSlot();
     res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
+    return;
+  }
+
+  // Consume the payment nonce AFTER spend cap admission succeeds.
+  // If the nonce is already consumed → release the reserved cap so headroom is restored.
+  const nonceAccepted = await consumeX402Nonce(callerWallet, paymentNonce, paymentValidBefore);
+  if (!nonceAccepted) {
+    await atomicSpendCapRelease(authKey, grossAmount);
+    await releaseSlot();
+    res.status(409).json({ error: "Payment proof already used: nonce has been consumed" });
     return;
   }
 

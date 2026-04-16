@@ -304,6 +304,8 @@ describe("paywall — settlement NOT called when auth/cap checks fail", () => {
 
     expect(ctx.statusCode).toBe(403);
     expect((ctx.body as any)?.error).toMatch(/spend cap/i);
+    // Nonce must NOT be consumed — cap check happens first so proof stays untouched.
+    expect(consumeNonceMock).not.toHaveBeenCalled();
     expect(settlePaymentMock).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
@@ -409,8 +411,8 @@ describe("paywall — spend-cap rollback on post-reservation failure", () => {
     expect(atomicSpendCapReleaseMock).not.toHaveBeenCalled();
   });
 
-  it("auth.spent unchanged when nonce replay is detected before cap reservation", async () => {
-    // Nonce already consumed — must reject before reserving spend cap.
+  it("cap reserved then released when nonce replay is detected after cap admission", async () => {
+    // Cap check passes (eval returns 1), but nonce is already consumed → release cap.
     consumeNonceMock.mockResolvedValue(false);
     settlePaymentMock.mockResolvedValue({ success: false, error: "not configured" });
 
@@ -421,9 +423,13 @@ describe("paywall — spend-cap rollback on post-reservation failure", () => {
 
     expect(ctx.statusCode).toBe(402);
     expect((ctx.body as any)?.error).toMatch(/replay/i);
-    // Cap was never reserved — no release needed.
-    expect(redisMock.eval).not.toHaveBeenCalled();
-    expect(atomicSpendCapReleaseMock).not.toHaveBeenCalled();
+    // Cap IS reserved first (cap check before nonce).
+    expect(redisMock.eval).toHaveBeenCalled();
+    // Release must be called to restore headroom after nonce rejection.
+    expect(atomicSpendCapReleaseMock).toHaveBeenCalledWith(
+      expect.stringContaining("auth:"),
+      expect.any(Number)
+    );
     expect(next).not.toHaveBeenCalled();
   });
 });

@@ -549,7 +549,7 @@ describe("/api/pay/record — atomic spend-cap enforcement", () => {
     redisMock.eval.mockResolvedValue(1); // within cap by default
   });
 
-  it("rejects with 403 when atomic check returns over-cap, after nonce consumption", async () => {
+  it("rejects with 403 when atomic check returns over-cap, before nonce consumption", async () => {
     // Lua script returns 0 → over cap
     redisMock.eval.mockResolvedValue(0);
 
@@ -562,9 +562,9 @@ describe("/api/pay/record — atomic spend-cap enforcement", () => {
 
     expect(ctx.statusCode).toBe(403);
     expect((ctx.body as any)?.error).toMatch(/[Ss]pend cap/);
-    // Nonce IS consumed before the spend-cap check — no rollback needed since
-    // cap was never incremented.
-    expect(consumeNonceMock).toHaveBeenCalled();
+    // Nonce must NOT be consumed — cap check happens first so the proof stays
+    // untouched and the caller can retry with the same proof.
+    expect(consumeNonceMock).not.toHaveBeenCalled();
     // No pipeline writes.
     expect(redisMock.pipeline).not.toHaveBeenCalled();
   });
@@ -622,8 +622,8 @@ describe("/api/pay/record — atomic spend-cap enforcement", () => {
     expect(consumeNonceMock).not.toHaveBeenCalled();
   });
 
-  it("auth.spent unchanged after replayed nonce — atomicSpendCapReserve not called", async () => {
-    // Nonce already consumed — spend cap must not be reserved.
+  it("cap reserved then released when nonce is replayed after cap admission", async () => {
+    // Cap check passes (eval returns 1), but nonce is already consumed → release cap.
     consumeNonceMock.mockResolvedValueOnce(false);
 
     const handler = await getRecordHandler();
@@ -634,8 +634,13 @@ describe("/api/pay/record — atomic spend-cap enforcement", () => {
     await handler(req, ctx.res, vi.fn());
 
     expect(ctx.statusCode).toBe(409);
-    // Reserve must NOT be called — nonce was rejected before the cap check.
-    expect(redisMock.eval).not.toHaveBeenCalled();
+    // Cap reserve IS called first (cap check before nonce).
+    expect(redisMock.eval).toHaveBeenCalled();
+    // Release must be called to restore headroom after nonce rejection.
+    expect(atomicSpendCapReleaseMock).toHaveBeenCalledWith(
+      expect.stringContaining("auth:"),
+      expect.any(Number)
+    );
     expect(redisMock.pipeline).not.toHaveBeenCalled();
   });
 
