@@ -78,6 +78,25 @@ The SDK does not implicitly create services. If `serviceId` does not exist in Re
 
 ---
 
+## Test isolation
+
+### `test.sh` uses well-known wallet addresses (not unique per run)
+**Friction:** The e2e test script uses fixed Anvil test wallet addresses (`0xf39Fd6...`, `0x70997970...`). When Upstash Redis is configured (persistent), wallets registered from previous runs already exist. The wallet `POST /api/wallets` endpoint is idempotent and returns `200` for existing wallets — but the test previously asserted `201` only.
+
+**Status:** Fixed in test.sh — wallet registration now accepts `200` or `201`.
+
+### `test.sh` platform stats assertions don't hold with persistent Redis
+**Friction:** The test previously asserted absolute platform counter values (`totalServices=1`, `totalCalls=1`, etc.). With Upstash configured, these counters accumulate across all test runs and can never match hardcoded values.
+
+**Status:** Fixed in test.sh — platform stats checks now assert field presence rather than absolute values. Service-level stats (per-service counters) remain exact since each run creates a fresh service with a unique UUID.
+
+### `test.sh` server startup fails when run via `bash /path/to/test.sh`
+**Friction:** The test script uses `npx tsx src/index.ts` (relative path), which requires the working directory to be the project root. Running `bash /mnt/e/agentpay/test.sh` from a different directory causes the tsx process to fail silently.
+
+**Workaround:** Always run as `bash test.sh` from the project root (`/mnt/e/agentpay`).
+
+---
+
 ## Not in Phase 1
 
 These are out of scope by design:
