@@ -6,7 +6,7 @@ import { Service, UsageRecord } from "../lib/types";
 import { normalizeAddress, isValidAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
 import { verifyX402Proof, parseX402Proof, consumeX402Nonce } from "../lib/x402";
-import { atomicSpendCapReserve } from "../lib/redis-scripts";
+import { atomicSpendCapReserve, atomicSpendCapRelease } from "../lib/redis-scripts";
 import logger from "../lib/logger";
 
 const router = Router();
@@ -204,16 +204,7 @@ router.post("/record", async (req: Request, res: Response) => {
 
   const grossAmount = Number(service.pricePerCall);
   const providerWallet = service.providerWallet;
-
-  // Atomically check spend cap and reserve the amount — prevents two concurrent payments
-  // from both passing a non-atomic read-check and overshooting spendCap.
   const authKey = `auth:${callerWallet}:${serviceId}`;
-  const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
-  if (!withinCap) {
-    await releaseSlot();
-    res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
-    return;
-  }
 
   // Cryptographic proof verification — same invariants as /api/pay/verify.
   // Must be called BEFORE consuming the nonce so that forged proofs fail closed
@@ -251,12 +242,22 @@ router.post("/record", async (req: Request, res: Response) => {
     timestamp: now.toISOString(),
   };
 
-  // Consume the payment nonce BEFORE writing any state — fail closed on replay.
-  // If the nonce is already consumed (replayed proof), reject now before any writes.
+  // Consume the payment nonce BEFORE reserving spend cap — ensures a replayed proof
+  // fails closed without burning the caller's spend cap headroom.
   const nonceAccepted = await consumeX402Nonce(callerWallet, paymentNonce, paymentValidBefore);
   if (!nonceAccepted) {
     await releaseSlot();
     res.status(409).json({ error: "Payment proof already used: nonce has been consumed" });
+    return;
+  }
+
+  // Atomically reserve spend cap AFTER proof verification and nonce consumption.
+  // Placing the reservation here means only a pipeline write failure can leave
+  // the cap incremented without a committed record — handled below with a release.
+  const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
+  if (!withinCap) {
+    await releaseSlot();
+    res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
     return;
   }
 
@@ -304,6 +305,9 @@ router.post("/record", async (req: Request, res: Response) => {
 
   // Verify pipeline succeeded — all operations must return a non-null result.
   if (!pipelineResults || pipelineResults.some((r) => r === null || r === undefined)) {
+    // Pipeline failed after spend cap was reserved — release the reservation so the
+    // caller's headroom is restored and they can retry successfully.
+    await atomicSpendCapRelease(authKey, grossAmount);
     await releaseSlot();
     res.status(500).json({ error: "Usage recording failed: storage write error" });
     return;

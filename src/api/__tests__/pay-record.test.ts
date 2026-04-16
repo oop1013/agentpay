@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Request, Response } from "express";
 
 // ── Hoist mock objects so factories can reference them ────────────────────────
-const { redisMock, parseProofMock, verifyProofMock, consumeNonceMock } = vi.hoisted(() => {
+const { redisMock, parseProofMock, verifyProofMock, consumeNonceMock, atomicSpendCapReleaseMock } = vi.hoisted(() => {
   const redisMock = {
     set: vi.fn(),
     get: vi.fn(),
@@ -26,7 +26,8 @@ const { redisMock, parseProofMock, verifyProofMock, consumeNonceMock } = vi.hois
   const parseProofMock = vi.fn();
   const verifyProofMock = vi.fn();
   const consumeNonceMock = vi.fn().mockResolvedValue(true);
-  return { redisMock, parseProofMock, verifyProofMock, consumeNonceMock };
+  const atomicSpendCapReleaseMock = vi.fn().mockResolvedValue(undefined);
+  return { redisMock, parseProofMock, verifyProofMock, consumeNonceMock, atomicSpendCapReleaseMock };
 });
 
 vi.mock("../../lib/redis", () => ({ redis: redisMock }));
@@ -39,6 +40,7 @@ vi.mock("../../lib/x402", () => ({
 
 vi.mock("../../lib/redis-scripts", () => ({
   atomicSpendCapReserve: (...args: unknown[]) => redisMock.eval(...args),
+  atomicSpendCapRelease: (...args: unknown[]) => atomicSpendCapReleaseMock(...args),
 }));
 
 vi.mock("../../lib/logger", () => ({
@@ -547,7 +549,7 @@ describe("/api/pay/record — atomic spend-cap enforcement", () => {
     redisMock.eval.mockResolvedValue(1); // within cap by default
   });
 
-  it("rejects with 403 when atomic check returns over-cap, before nonce consumption", async () => {
+  it("rejects with 403 when atomic check returns over-cap, after nonce consumption", async () => {
     // Lua script returns 0 → over cap
     redisMock.eval.mockResolvedValue(0);
 
@@ -560,8 +562,9 @@ describe("/api/pay/record — atomic spend-cap enforcement", () => {
 
     expect(ctx.statusCode).toBe(403);
     expect((ctx.body as any)?.error).toMatch(/[Ss]pend cap/);
-    // Nonce must NOT be consumed — spend-cap rejection must happen before nonce burn.
-    expect(consumeNonceMock).not.toHaveBeenCalled();
+    // Nonce IS consumed before the spend-cap check — no rollback needed since
+    // cap was never incremented.
+    expect(consumeNonceMock).toHaveBeenCalled();
     // No pipeline writes.
     expect(redisMock.pipeline).not.toHaveBeenCalled();
   });
@@ -600,6 +603,63 @@ describe("/api/pay/record — atomic spend-cap enforcement", () => {
 
     const statuses = [ctx1.statusCode, ctx2.statusCode].sort();
     expect(statuses).toEqual([201, 403]);
+  });
+
+  it("auth.spent unchanged after invalid proof — atomicSpendCapReserve never called", async () => {
+    // Proof fails verification — spend cap must never be touched.
+    verifyProofMock.mockResolvedValueOnce({ valid: false, error: "Bad signature" });
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(402);
+    // eval backs atomicSpendCapReserve — must not be called when proof is invalid.
+    expect(redisMock.eval).not.toHaveBeenCalled();
+    expect(consumeNonceMock).not.toHaveBeenCalled();
+  });
+
+  it("auth.spent unchanged after replayed nonce — atomicSpendCapReserve not called", async () => {
+    // Nonce already consumed — spend cap must not be reserved.
+    consumeNonceMock.mockResolvedValueOnce(false);
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(409);
+    // Reserve must NOT be called — nonce was rejected before the cap check.
+    expect(redisMock.eval).not.toHaveBeenCalled();
+    expect(redisMock.pipeline).not.toHaveBeenCalled();
+  });
+
+  it("auth.spent rolled back via atomicSpendCapRelease on pipeline failure", async () => {
+    // Pipeline fails after spend cap is reserved — release must be called.
+    const failPipeline = buildPipelineExec();
+    failPipeline.exec.mockResolvedValue([null, null]);
+    redisMock.pipeline.mockReturnValue(failPipeline);
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody());
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(500);
+    // Reserve was called (eval returned 1 by default)
+    expect(redisMock.eval).toHaveBeenCalled();
+    // Release must be called to restore headroom
+    expect(atomicSpendCapReleaseMock).toHaveBeenCalledWith(
+      expect.stringContaining("auth:"),
+      expect.any(Number)
+    );
   });
 });
 

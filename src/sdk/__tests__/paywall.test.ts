@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Request, Response, NextFunction } from "express";
 
 // ── Hoist mock objects ────────────────────────────────────────────────────────
-const { redisMock, verifyProofMock, parseProofMock, consumeNonceMock, settlePaymentMock } = vi.hoisted(() => {
+const { redisMock, verifyProofMock, parseProofMock, consumeNonceMock, settlePaymentMock, atomicSpendCapReleaseMock } = vi.hoisted(() => {
   const redisMock = {
     hgetall: vi.fn(),
     pipeline: vi.fn(),
@@ -22,7 +22,8 @@ const { redisMock, verifyProofMock, parseProofMock, consumeNonceMock, settlePaym
   const parseProofMock = vi.fn();
   const consumeNonceMock = vi.fn();
   const settlePaymentMock = vi.fn();
-  return { redisMock, verifyProofMock, parseProofMock, consumeNonceMock, settlePaymentMock };
+  const atomicSpendCapReleaseMock = vi.fn().mockResolvedValue(undefined);
+  return { redisMock, verifyProofMock, parseProofMock, consumeNonceMock, settlePaymentMock, atomicSpendCapReleaseMock };
 });
 
 vi.mock("../../lib/redis", () => ({ redis: redisMock }));
@@ -36,6 +37,7 @@ vi.mock("../../lib/settlement", () => ({
 }));
 vi.mock("../../lib/redis-scripts", () => ({
   atomicSpendCapReserve: (...args: unknown[]) => redisMock.eval(...args),
+  atomicSpendCapRelease: (...args: unknown[]) => atomicSpendCapReleaseMock(...args),
 }));
 
 import { paywall } from "../paywall";
@@ -335,5 +337,93 @@ describe("paywall — settlement NOT called when auth/cap checks fail", () => {
 
     const statuses = [ctx1.statusCode, ctx2.statusCode].filter(Boolean);
     expect(statuses).toContain(403);
+  });
+});
+
+describe("paywall — spend-cap rollback on post-reservation failure", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisMock.hgetall.mockImplementation(async (key: string) => {
+      if (key === `service:${SERVICE_ID}`) return makeService();
+      if (key.startsWith("auth:")) return makeAuth();
+      return null;
+    });
+    verifyProofMock.mockResolvedValue({
+      valid: true,
+      from: CALLER,
+      to: PROVIDER,
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
+    parseProofMock.mockReturnValue({
+      from: CALLER,
+      to: PROVIDER,
+      value: "1000",
+      validAfter: "0",
+      validBefore: String(VALID_BEFORE),
+      nonce: NONCE,
+      signature: "0xsig",
+      chainId: 84532,
+    });
+    consumeNonceMock.mockResolvedValue(true);
+    redisMock.eval.mockResolvedValue(1); // within cap by default
+  });
+
+  it("releases spend cap when on-chain settlement fails", async () => {
+    // Settlement is configured but fails — must release the reserved cap.
+    settlePaymentMock.mockResolvedValue({
+      success: false,
+      error: "Transaction reverted: insufficient balance",
+    });
+
+    const next = vi.fn();
+    const { res, ctx } = makeRes();
+    const middleware = paywall({ serviceId: SERVICE_ID });
+    await middleware(makeReq(), res, next as NextFunction);
+
+    expect(ctx.statusCode).toBe(402);
+    expect((ctx.body as any)?.error).toMatch(/settlement/i);
+    expect(next).not.toHaveBeenCalled();
+    // Spend cap must be released so the caller can retry.
+    expect(atomicSpendCapReleaseMock).toHaveBeenCalledWith(
+      expect.stringContaining("auth:"),
+      expect.any(Number)
+    );
+  });
+
+  it("does NOT release spend cap when settlement is skipped (dev/test mode)", async () => {
+    // Settlement not configured — skipped, not failed. Cap stays reserved.
+    settlePaymentMock.mockResolvedValue({
+      success: false,
+      error: "BASE_SEPOLIA_RPC_URL or PROVIDER_PRIVATE_KEY not set",
+    });
+
+    const next = vi.fn();
+    const { res } = makeRes();
+    const middleware = paywall({ serviceId: SERVICE_ID });
+    await middleware(makeReq(), res, next as NextFunction);
+
+    expect(next).toHaveBeenCalled();
+    // No rollback — settlement was intentionally skipped.
+    expect(atomicSpendCapReleaseMock).not.toHaveBeenCalled();
+  });
+
+  it("auth.spent unchanged when nonce replay is detected before cap reservation", async () => {
+    // Nonce already consumed — must reject before reserving spend cap.
+    consumeNonceMock.mockResolvedValue(false);
+    settlePaymentMock.mockResolvedValue({ success: false, error: "not configured" });
+
+    const next = vi.fn();
+    const { res, ctx } = makeRes();
+    const middleware = paywall({ serviceId: SERVICE_ID });
+    await middleware(makeReq(), res, next as NextFunction);
+
+    expect(ctx.statusCode).toBe(402);
+    expect((ctx.body as any)?.error).toMatch(/replay/i);
+    // Cap was never reserved — no release needed.
+    expect(redisMock.eval).not.toHaveBeenCalled();
+    expect(atomicSpendCapReleaseMock).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
   });
 });

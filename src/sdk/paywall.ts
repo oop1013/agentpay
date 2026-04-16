@@ -6,7 +6,7 @@ import { normalizeAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
 import { verifyX402Proof, parseX402Proof, consumeX402Nonce } from "../lib/x402";
 import { settlePayment } from "../lib/settlement";
-import { atomicSpendCapReserve } from "../lib/redis-scripts";
+import { atomicSpendCapReserve, atomicSpendCapRelease } from "../lib/redis-scripts";
 
 const X402_PAYMENT_HEADER = "x-402-payment";
 const X402_CALLER_HEADER = "x-402-caller";
@@ -106,7 +106,7 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
-    // ── Step 4: Check authorization and spend cap BEFORE settling on-chain ──
+    // ── Step 4: Check authorization ──
     const authData = await redis.hgetall(`auth:${callerWallet}:${serviceId}`);
     if (!authData || Object.keys(authData).length === 0) {
       res.status(403).json({ error: "No authorization found for this caller and service" });
@@ -114,45 +114,15 @@ export function paywall(config: PaywallConfig) {
     }
 
     const authRecord = authData as unknown as Record<string, unknown>;
+    const authKey = `auth:${callerWallet}:${serviceId}`;
 
     if (authRecord.status !== "active") {
       res.status(403).json({ error: `Authorization is ${authRecord.status}` });
       return;
     }
 
-    // Atomically check spend cap and reserve the amount — prevents two concurrent payments
-    // from both passing a non-atomic read-check and overshooting spendCap.
-    // Spend cap is enforced against grossAmount, not providerNet.
-    const authKey = `auth:${callerWallet}:${serviceId}`;
-    const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
-    if (!withinCap) {
-      res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
-      return;
-    }
-
-    // ── Step 5: Submit on-chain settlement via receiveWithAuthorization ──
-    // Auth and spend cap verified — safe to charge on-chain now.
-    const settlementResult = await settlePayment(parsedProof);
-
-    if (!settlementResult.success) {
-      // If settlement env vars are not set, we skip on-chain settlement (dev/test mode).
-      // If env vars ARE set but settlement failed, reject the request.
-      const isNotConfigured =
-        settlementResult.error?.includes("BASE_SEPOLIA_RPC_URL or PROVIDER_PRIVATE_KEY not set");
-
-      if (!isNotConfigured) {
-        res.status(402).json({
-          error: "On-chain payment settlement failed",
-          detail: settlementResult.error,
-        });
-        return;
-      }
-
-      console.warn("[agentpay] Settlement skipped:", settlementResult.error);
-    }
-
-    // ── Step 6: Consume nonce to prevent replay attacks ──
-    // Must happen after all validation passes (settlement + auth + spend cap) and before next().
+    // ── Step 5: Consume nonce BEFORE reserving spend cap ──
+    // A replayed proof fails closed here without burning the caller's spend cap headroom.
     const nonceConsumed = await consumeX402Nonce(
       callerWallet,
       x402Result.nonce!,
@@ -163,7 +133,38 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
-    // ── Step 7: Payment verified — allow request through ──
+    // ── Step 6: Atomically reserve spend cap AFTER nonce consumption ──
+    // Only a settlement failure can now leave the cap incremented without a committed
+    // on-chain payment — handled below with a release.
+    const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
+    if (!withinCap) {
+      res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
+      return;
+    }
+
+    // ── Step 7: Submit on-chain settlement via receiveWithAuthorization ──
+    const settlementResult = await settlePayment(parsedProof);
+
+    if (!settlementResult.success) {
+      // If settlement env vars are not set, we skip on-chain settlement (dev/test mode).
+      // If env vars ARE set but settlement failed, release the reserved spend cap so the
+      // caller's headroom is restored and they can retry with a fresh proof.
+      const isNotConfigured =
+        settlementResult.error?.includes("BASE_SEPOLIA_RPC_URL or PROVIDER_PRIVATE_KEY not set");
+
+      if (!isNotConfigured) {
+        await atomicSpendCapRelease(authKey, grossAmount);
+        res.status(402).json({
+          error: "On-chain payment settlement failed",
+          detail: settlementResult.error,
+        });
+        return;
+      }
+
+      console.warn("[agentpay] Settlement skipped:", settlementResult.error);
+    }
+
+    // ── Step 8: Payment verified — allow request through ──
     const breakdown = computeFeeBreakdown(grossAmount, Number(service.platformFeeBps));
 
     // Attach payment context for downstream handlers if needed
