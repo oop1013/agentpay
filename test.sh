@@ -10,7 +10,11 @@ EXISTING_PID=$(lsof -ti :3000 2>/dev/null || true)
 if [ -n "$EXISTING_PID" ]; then
   echo "Killing existing process on port 3000 (PID $EXISTING_PID)..."
   kill "$EXISTING_PID" 2>/dev/null || true
-  sleep 0.5
+  # Wait for port to be released before starting a fresh server
+  for _i in $(seq 1 20); do
+    if ! lsof -ti :3000 > /dev/null 2>&1; then break; fi
+    sleep 0.5
+  done
 fi
 
 # Anvil/Hardhat test accounts (well-known Base Sepolia test keys — never use on mainnet)
@@ -20,6 +24,17 @@ PROVIDER_WALLET="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 SERVICE_ID=""
 PASS=0
 FAIL=0
+
+# API key for authenticated write endpoints.
+# Read from env var if set; otherwise try to extract from .env file.
+API_KEY="${AGENTPAY_API_KEY:-}"
+if [ -z "$API_KEY" ] && [ -f ".env" ]; then
+  API_KEY=$(grep -E "^AGENTPAY_API_KEY=" .env | head -1 | sed 's/^AGENTPAY_API_KEY=//' | tr -d '"' || true)
+fi
+AUTH_HEADER=""
+if [ -n "$API_KEY" ]; then
+  AUTH_HEADER="Authorization: Bearer $API_KEY"
+fi
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -57,7 +72,7 @@ assert_json_field() {
 # ── Start server ─────────────────────────────────────────────────────────────
 
 bold "Starting AgentPay server..."
-npx tsx src/index.ts &
+npx tsx src/index.ts > /tmp/agentpay-test-server.log 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
@@ -67,18 +82,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Wait for server to be ready
-for i in $(seq 1 30); do
+# Wait for server to be ready (tsx cold-start can take 10-15s)
+for i in $(seq 1 60); do
   if curl -s "$BASE/health" > /dev/null 2>&1; then
     break
   fi
-  sleep 0.3
+  sleep 0.5
 done
 
-# Verify health
-HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/health")
+# Verify health (use || true to prevent set -e from aborting on curl non-zero exit)
+HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/health" || true)
 if [ "$HEALTH_STATUS" != "200" ]; then
   red "Server failed to start (health check returned $HEALTH_STATUS)"
+  red "Server log:"
+  cat /tmp/agentpay-test-server.log 2>/dev/null || true
   exit 1
 fi
 green "Server is up!"
@@ -89,6 +106,7 @@ echo ""
 bold "1. POST /api/services — create test service"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE/api/services" \
   -H "Content-Type: application/json" \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
   -d "{
     \"providerWallet\": \"$PROVIDER_WALLET\",
     \"name\": \"Test AI Service\",
@@ -117,6 +135,7 @@ echo ""
 bold "2. POST /api/wallets — create caller wallet"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE/api/wallets" \
   -H "Content-Type: application/json" \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
   -d "{
     \"address\": \"$CALLER_WALLET\",
     \"type\": \"agent\",
@@ -133,6 +152,7 @@ echo ""
 bold "   POST /api/wallets — create provider wallet"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE/api/wallets" \
   -H "Content-Type: application/json" \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
   -d "{
     \"address\": \"$PROVIDER_WALLET\",
     \"type\": \"provider\",
@@ -148,6 +168,7 @@ echo ""
 bold "3. POST /api/auth — authorize wallet for service"
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE/api/auth" \
   -H "Content-Type: application/json" \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
   -d "{
     \"callerWallet\": \"$CALLER_WALLET\",
     \"serviceId\": \"$SERVICE_ID\",
