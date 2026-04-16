@@ -16,6 +16,7 @@ const { redisMock, verifyProofMock, parseProofMock, consumeNonceMock, settlePaym
     hincrby: vi.fn(),
     zadd: vi.fn(),
     hset: vi.fn(),
+    eval: vi.fn(),
   };
   const verifyProofMock = vi.fn();
   const parseProofMock = vi.fn();
@@ -32,6 +33,9 @@ vi.mock("../../lib/x402", () => ({
 }));
 vi.mock("../../lib/settlement", () => ({
   settlePayment: settlePaymentMock,
+}));
+vi.mock("../../lib/redis-scripts", () => ({
+  atomicSpendCapReserve: (...args: unknown[]) => redisMock.eval(...args),
 }));
 
 import { paywall } from "../paywall";
@@ -114,6 +118,7 @@ describe("paywall — nonce consumption on successful payment", () => {
       chainId: 84532,
     });
     consumeNonceMock.mockResolvedValue(true);
+    redisMock.eval.mockResolvedValue(1); // within cap by default
   });
 
   it("calls consumeX402Nonce with nonce from verified proof before calling next()", async () => {
@@ -176,6 +181,7 @@ describe("paywall — replay rejection (nonce already consumed)", () => {
       signature: "0xsig",
       chainId: 84532,
     });
+    redisMock.eval.mockResolvedValue(1); // within cap by default
   });
 
   it("returns 402 and does NOT call next() when nonce is already consumed", async () => {
@@ -242,6 +248,8 @@ describe("paywall — settlement NOT called when auth/cap checks fail", () => {
       if (key === `service:${SERVICE_ID}`) return makeService();
       return null; // no auth by default — overridden per test
     });
+    redisMock.eval.mockResolvedValue(1); // within cap by default
+    consumeNonceMock.mockResolvedValue(true);
   });
 
   it("does NOT call settlePayment when auth record is missing", async () => {
@@ -278,13 +286,14 @@ describe("paywall — settlement NOT called when auth/cap checks fail", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("does NOT call settlePayment when spent + grossAmount exceeds spendCap", async () => {
-    // spent=990000, pricePerCall=1000, spendCap=990000 → 990000 + 1000 > 990000
+  it("does NOT call settlePayment when atomic spend-cap check is over cap", async () => {
+    // Atomic Lua check returns 0 → over cap; auth status still checked via hgetall
     redisMock.hgetall.mockImplementation(async (key: string) => {
       if (key === `service:${SERVICE_ID}`) return makeService();
-      if (key.startsWith("auth:")) return { status: "active", spendCap: "990000", spent: "990000" };
+      if (key.startsWith("auth:")) return { status: "active" }; // status only
       return null;
     });
+    redisMock.eval.mockResolvedValue(0); // Lua: over cap
 
     const next = vi.fn();
     const { res, ctx } = makeRes();
@@ -295,5 +304,36 @@ describe("paywall — settlement NOT called when auth/cap checks fail", () => {
     expect((ctx.body as any)?.error).toMatch(/spend cap/i);
     expect(settlePaymentMock).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("concurrent payments at cap boundary: only one proceeds to settlement (regression)", async () => {
+    // Simulate two concurrent requests: Lua returns 1 for first, 0 for second
+    redisMock.hgetall.mockImplementation(async (key: string) => {
+      if (key === `service:${SERVICE_ID}`) return makeService();
+      if (key.startsWith("auth:")) return { status: "active" };
+      return null;
+    });
+    redisMock.eval
+      .mockResolvedValueOnce(1)  // first payment reserved
+      .mockResolvedValueOnce(0); // second payment rejected — cap exhausted atomically
+
+    const next1 = vi.fn();
+    const next2 = vi.fn();
+    const { res: res1, ctx: ctx1 } = makeRes();
+    const { res: res2, ctx: ctx2 } = makeRes();
+    const middleware = paywall({ serviceId: SERVICE_ID });
+
+    await Promise.all([
+      middleware(makeReq(), res1, next1 as NextFunction),
+      middleware(makeReq(), res2, next2 as NextFunction),
+    ]);
+
+    const nextCalls = [next1.mock.calls.length, next2.mock.calls.length];
+    // Exactly one should have proceeded past the cap check
+    expect(nextCalls.filter((c) => c > 0)).toHaveLength(1);
+    expect(nextCalls.filter((c) => c === 0)).toHaveLength(1);
+
+    const statuses = [ctx1.statusCode, ctx2.statusCode].filter(Boolean);
+    expect(statuses).toContain(403);
   });
 });

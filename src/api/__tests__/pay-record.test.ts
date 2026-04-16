@@ -21,6 +21,7 @@ const { redisMock, parseProofMock, verifyProofMock, consumeNonceMock } = vi.hois
     hincrby: vi.fn(),
     zadd: vi.fn(),
     pipeline: vi.fn(),
+    eval: vi.fn(),
   };
   const parseProofMock = vi.fn();
   const verifyProofMock = vi.fn();
@@ -34,6 +35,10 @@ vi.mock("../../lib/x402", () => ({
   verifyX402Proof: verifyProofMock,
   parseX402Proof: parseProofMock,
   consumeX402Nonce: consumeNonceMock,
+}));
+
+vi.mock("../../lib/redis-scripts", () => ({
+  atomicSpendCapReserve: (...args: unknown[]) => redisMock.eval(...args),
 }));
 
 vi.mock("../../lib/logger", () => ({
@@ -93,7 +98,8 @@ function buildPipelineExec() {
     zadd: vi.fn().mockReturnThis(),
     hincrby: vi.fn().mockReturnThis(),
     hset: vi.fn().mockReturnThis(),
-    exec: vi.fn().mockResolvedValue([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+    set: vi.fn().mockReturnThis(),
+    exec: vi.fn().mockResolvedValue([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
   };
   return pipeline;
 }
@@ -150,6 +156,7 @@ describe("/api/pay/record — server-derived nonce from paymentProof", () => {
     redisMock.set.mockResolvedValue("OK");
     redisMock.get.mockResolvedValue(null);
     redisMock.del.mockResolvedValue(1);
+    redisMock.eval.mockResolvedValue(1); // within cap by default
     consumeNonceMock.mockResolvedValue(true);
   });
 
@@ -247,6 +254,7 @@ describe("/api/pay/record — atomic idempotency", () => {
     });
     redisMock.pipeline.mockReturnValue(buildPipelineExec());
     redisMock.del.mockResolvedValue(1);
+    redisMock.eval.mockResolvedValue(1); // within cap by default
     consumeNonceMock.mockResolvedValue(true);
   });
 
@@ -308,6 +316,7 @@ describe("/api/pay/record — idempotency slot released on non-success exits", (
     // Claim the slot successfully on every test
     redisMock.set.mockResolvedValue("OK");
     redisMock.get.mockResolvedValue(null);
+    redisMock.eval.mockResolvedValue(1); // within cap by default
   });
 
   it("releases slot on 404 (service not found)", async () => {
@@ -411,6 +420,7 @@ describe("/api/pay/record — proof verification (forged proof rejection)", () =
     redisMock.set.mockResolvedValue("OK");
     redisMock.get.mockResolvedValue(null);
     redisMock.del.mockResolvedValue(1);
+    redisMock.eval.mockResolvedValue(1); // within cap by default
     consumeNonceMock.mockResolvedValue(true);
   });
 
@@ -512,7 +522,7 @@ describe("/api/pay/record — proof verification (forged proof rejection)", () =
   });
 });
 
-describe("/api/pay/record — spend-cap enforcement", () => {
+describe("/api/pay/record — atomic spend-cap enforcement", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     parseProofMock.mockReturnValue(validParsedProof());
@@ -524,20 +534,22 @@ describe("/api/pay/record — spend-cap enforcement", () => {
       nonce: NONCE,
       validBefore: VALID_BEFORE,
     });
+    redisMock.hgetall.mockImplementation(async (key: string) => {
+      if (key.startsWith("service:")) return serviceData();
+      if (key.startsWith("auth:")) return { status: "active" }; // status only — cap enforced by Lua
+      return null;
+    });
     redisMock.set.mockResolvedValue("OK");
     redisMock.get.mockResolvedValue(null);
     redisMock.del.mockResolvedValue(1);
     consumeNonceMock.mockResolvedValue(true);
     redisMock.pipeline.mockReturnValue(buildPipelineExec());
+    redisMock.eval.mockResolvedValue(1); // within cap by default
   });
 
-  it("rejects with 403 when spent + pricePerCall exceeds spendCap, before nonce consumption", async () => {
-    // spendCap = 1000, spent = 500, pricePerCall = 1000 → 1500 > 1000 → over cap
-    redisMock.hgetall.mockImplementation(async (key: string) => {
-      if (key.startsWith("service:")) return serviceData(); // pricePerCall = 1000
-      if (key.startsWith("auth:")) return { status: "active", spendCap: "1000", spent: "500" };
-      return null;
-    });
+  it("rejects with 403 when atomic check returns over-cap, before nonce consumption", async () => {
+    // Lua script returns 0 → over cap
+    redisMock.eval.mockResolvedValue(0);
 
     const handler = await getRecordHandler();
     if (!handler) return;
@@ -554,14 +566,8 @@ describe("/api/pay/record — spend-cap enforcement", () => {
     expect(redisMock.pipeline).not.toHaveBeenCalled();
   });
 
-  it("accepts when spent + pricePerCall is exactly at spendCap", async () => {
-    // spendCap = 1000, spent = 0, pricePerCall = 1000 → 1000 <= 1000 → allowed
-    redisMock.hgetall.mockImplementation(async (key: string) => {
-      if (key.startsWith("service:")) return serviceData(); // pricePerCall = 1000
-      if (key.startsWith("auth:")) return { status: "active", spendCap: "1000", spent: "0" };
-      return null;
-    });
-
+  it("accepts when atomic check returns within cap", async () => {
+    // Lua script returns 1 → within cap (default)
     const handler = await getRecordHandler();
     if (!handler) return;
 
@@ -570,5 +576,118 @@ describe("/api/pay/record — spend-cap enforcement", () => {
     await handler(req, ctx.res, vi.fn());
 
     expect(ctx.statusCode).toBe(201);
+  });
+
+  it("concurrent payments at cap boundary: only one succeeds (regression)", async () => {
+    // Simulate two concurrent requests hitting the atomic Lua check:
+    // First call: Lua returns 1 (reserved — within cap)
+    // Second call: Lua returns 0 (rejected — cap now exhausted)
+    redisMock.eval
+      .mockResolvedValueOnce(1)  // first payment passes
+      .mockResolvedValueOnce(0); // second payment fails — cap exhausted atomically
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const ctx1 = makeRes();
+    const ctx2 = makeRes();
+
+    // Run both concurrently
+    await Promise.all([
+      handler(makeReq(baseBody()), ctx1.res, vi.fn()),
+      handler(makeReq(baseBody()), ctx2.res, vi.fn()),
+    ]);
+
+    const statuses = [ctx1.statusCode, ctx2.statusCode].sort();
+    expect(statuses).toEqual([201, 403]);
+  });
+});
+
+describe("/api/pay/record — crash-safe idempotency finalization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    parseProofMock.mockReturnValue(validParsedProof());
+    verifyProofMock.mockResolvedValue({
+      valid: true,
+      from: CALLER_WALLET.toLowerCase(),
+      to: PROVIDER_WALLET.toLowerCase(),
+      amount: 1000,
+      nonce: NONCE,
+      validBefore: VALID_BEFORE,
+    });
+    redisMock.hgetall.mockImplementation(async (key: string) => {
+      if (key.startsWith("service:")) return serviceData();
+      if (key.startsWith("auth:")) return { status: "active" };
+      return null;
+    });
+    redisMock.set.mockResolvedValue("OK");
+    redisMock.get.mockResolvedValue(null);
+    redisMock.del.mockResolvedValue(1);
+    redisMock.eval.mockResolvedValue(1);
+    consumeNonceMock.mockResolvedValue(true);
+  });
+
+  it("idempotency finalization is in the pipeline (not a separate redis.set after exec)", async () => {
+    // The pipeline.set mock records calls; redis.set is only for claiming the slot.
+    const pipeline = buildPipelineExec();
+    redisMock.pipeline.mockReturnValue(pipeline);
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody(), { "idempotency-key": "key-pipeline-set" });
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(201);
+    // pipeline.set must have been called for the idempotency finalization
+    expect(pipeline.set).toHaveBeenCalledWith(
+      expect.stringContaining("idempotency:record:"),
+      expect.any(String),
+      expect.objectContaining({ ex: 86400 })
+    );
+    // redis.set must only have been called once — the initial NX slot claim,
+    // not a second time for finalization (which is now inside the pipeline).
+    expect(redisMock.set).toHaveBeenCalledTimes(1);
+  });
+
+  it("when pipeline fails (including finalization), slot is released so retry is not wedged", async () => {
+    // Simulate pipeline failure (e.g. network partition mid-write)
+    const failPipeline = buildPipelineExec();
+    failPipeline.exec.mockResolvedValue([null, null]);
+    redisMock.pipeline.mockReturnValue(failPipeline);
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody(), { "idempotency-key": "key-crash-safe" });
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    // Server returns 500 (pipeline failed)
+    expect(ctx.statusCode).toBe(500);
+    // Slot must be released so the client can retry without getting wedged
+    expect(redisMock.del).toHaveBeenCalledWith(
+      expect.stringContaining("idempotency:record:")
+    );
+  });
+
+  it("retry returns committed record when slot is already finalized", async () => {
+    // Simulate a prior run completing: slot holds the committed record
+    const committed = JSON.stringify({ id: "committed-record", serviceId: SERVICE_ID });
+    redisMock.set.mockResolvedValueOnce(null); // slot already claimed
+    redisMock.get.mockResolvedValueOnce(committed); // slot is finalized
+
+    const handler = await getRecordHandler();
+    if (!handler) return;
+
+    const req = makeReq(baseBody(), { "idempotency-key": "key-retry" });
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(201);
+    expect(ctx.body).toEqual(JSON.parse(committed));
+    // Must not do duplicate processing
+    expect(redisMock.pipeline).not.toHaveBeenCalled();
   });
 });

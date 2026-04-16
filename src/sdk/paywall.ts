@@ -6,6 +6,7 @@ import { normalizeAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
 import { verifyX402Proof, parseX402Proof, consumeX402Nonce } from "../lib/x402";
 import { settlePayment } from "../lib/settlement";
+import { atomicSpendCapReserve } from "../lib/redis-scripts";
 
 const X402_PAYMENT_HEADER = "x-402-payment";
 const X402_CALLER_HEADER = "x-402-caller";
@@ -119,17 +120,13 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
-    const spendCap = Number(authRecord.spendCap);
-    const spent = Number(authRecord.spent);
-
-    // Spend cap is enforced against grossAmount, not providerNet
-    if (spent + grossAmount > spendCap) {
-      res.status(403).json({
-        error: "Spend cap exceeded",
-        spendCap,
-        spent,
-        required: grossAmount,
-      });
+    // Atomically check spend cap and reserve the amount — prevents two concurrent payments
+    // from both passing a non-atomic read-check and overshooting spendCap.
+    // Spend cap is enforced against grossAmount, not providerNet.
+    const authKey = `auth:${callerWallet}:${serviceId}`;
+    const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
+    if (!withinCap) {
+      res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
       return;
     }
 
@@ -260,9 +257,6 @@ async function recordUsage(params: RecordUsageParams): Promise<void> {
   // Provider wallet earnings
   pipeline.hincrby(`wallet:${providerWallet}`, "totalEarned", breakdown.providerNet);
   pipeline.hset(`wallet:${providerWallet}`, { lastActiveAt: now.toISOString() } as Record<string, unknown>);
-
-  // Authorization spent
-  pipeline.hincrby(`auth:${callerWallet}:${serviceId}`, "spent", breakdown.grossAmount);
 
   // Platform stats
   pipeline.hincrby("platform:stats", "totalVolume", breakdown.grossAmount);

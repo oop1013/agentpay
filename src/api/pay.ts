@@ -6,6 +6,7 @@ import { Service, UsageRecord } from "../lib/types";
 import { normalizeAddress, isValidAddress } from "../lib/addresses";
 import { computeFeeBreakdown } from "../lib/fees";
 import { verifyX402Proof, parseX402Proof, consumeX402Nonce } from "../lib/x402";
+import { atomicSpendCapReserve } from "../lib/redis-scripts";
 import logger from "../lib/logger";
 
 const router = Router();
@@ -204,13 +205,13 @@ router.post("/record", async (req: Request, res: Response) => {
   const grossAmount = Number(service.pricePerCall);
   const providerWallet = service.providerWallet;
 
-  // Enforce spend cap — mirrors the check in /api/pay/verify.
-  // Prevents a caller from skipping /verify and posting directly to /record to bypass the cap.
-  const spendCap = Number((authData as Record<string, unknown>).spendCap);
-  const spent = Number((authData as Record<string, unknown>).spent ?? 0);
-  if (spent + grossAmount > spendCap) {
+  // Atomically check spend cap and reserve the amount — prevents two concurrent payments
+  // from both passing a non-atomic read-check and overshooting spendCap.
+  const authKey = `auth:${callerWallet}:${serviceId}`;
+  const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
+  if (!withinCap) {
     await releaseSlot();
-    res.status(403).json({ error: "Spend cap exceeded", spendCap, spent, required: grossAmount });
+    res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
     return;
   }
 
@@ -287,13 +288,17 @@ router.post("/record", async (req: Request, res: Response) => {
   pipeline.hincrby(`wallet:${providerWallet}`, "totalEarned", breakdown.providerNet);
   pipeline.hset(`wallet:${providerWallet}`, { lastActiveAt: now.toISOString() } as Record<string, unknown>);
 
-  // Update authorization spent
-  pipeline.hincrby(`auth:${callerWallet}:${serviceId}`, "spent", breakdown.grossAmount);
-
   // Update platform stats
   pipeline.hincrby("platform:stats", "totalVolume", breakdown.grossAmount);
   pipeline.hincrby("platform:stats", "totalFees", breakdown.platformFee);
   pipeline.hincrby("platform:stats", "totalCalls", 1);
+
+  // Finalize idempotency slot in the same pipeline batch as the writes.
+  // This makes finalization crash-safe: if the pipeline fails, both the writes
+  // and the finalization fail together, so retries are not wedged with a stale "pending" slot.
+  if (idempotencyCacheKey) {
+    (pipeline as any).set(idempotencyCacheKey, JSON.stringify(record), { ex: 86400 });
+  }
 
   const pipelineResults = await pipeline.exec();
 
@@ -302,11 +307,6 @@ router.post("/record", async (req: Request, res: Response) => {
     await releaseSlot();
     res.status(500).json({ error: "Usage recording failed: storage write error" });
     return;
-  }
-
-  // Finalize idempotency slot with actual result (replaces "pending" marker).
-  if (idempotencyCacheKey) {
-    await redis.set(idempotencyCacheKey, JSON.stringify(record), { ex: 86400 });
   }
 
   logger.info("payment.record", {
