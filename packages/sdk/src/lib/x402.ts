@@ -70,6 +70,10 @@ export interface X402VerifyResult {
   from?: string;
   to?: string;
   amount?: number;
+  /** Populated on valid: true — the proof nonce for replay protection via consumeX402Nonce */
+  nonce?: string;
+  /** Populated on valid: true — validBefore seconds (unix) for TTL computation in consumeX402Nonce */
+  validBefore?: number;
 }
 
 /**
@@ -218,5 +222,30 @@ export async function verifyX402Proof(
     from,
     to,
     amount: proofAmount,
+    nonce: parsed.nonce,
+    validBefore,
   };
+}
+
+/**
+ * Atomically mark an x402 payment nonce as consumed (replay protection).
+ *
+ * Call this ONLY after a payment has been definitively accepted — never during
+ * a preflight verify. Returns true if the nonce was freshly claimed, false if it
+ * was already consumed (indicating a duplicate/replay).
+ *
+ * @param from         Payer wallet address (normalised hex)
+ * @param nonce        Proof nonce (hex bytes32) from X402VerifyResult
+ * @param validBefore  Proof validBefore timestamp (seconds) from X402VerifyResult
+ */
+export async function consumeX402Nonce(
+  from: string,
+  nonce: string,
+  validBefore: number
+): Promise<boolean> {
+  const nonceKey = `used_nonce:${from}:${nonce}`;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttl = Math.max(validBefore - nowSec + 60, 60); // at least 60s TTL
+  const claimed = await redis.set(nonceKey, "1", { nx: true, ex: ttl });
+  return claimed !== null;
 }

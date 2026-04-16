@@ -4,7 +4,38 @@ import { redis } from "./lib/redis";
 import { Service, UsageRecord, UsageStatus } from "./lib/types";
 import { normalizeAddress } from "./lib/addresses";
 import { computeFeeBreakdown } from "./lib/fees";
-import { verifyX402Proof } from "./lib/x402";
+import { verifyX402Proof, consumeX402Nonce } from "./lib/x402";
+
+// Lua script: atomically check and reserve spend cap.
+// Returns 1 if within cap (spent incremented), 0 if over cap.
+const SPEND_CAP_RESERVE_SCRIPT = `
+local spent = tonumber(redis.call("HGET", KEYS[1], "spent") or "0")
+local cap = tonumber(redis.call("HGET", KEYS[1], "spendCap") or "0")
+local amount = tonumber(ARGV[1])
+if spent + amount > cap then return 0 end
+redis.call("HINCRBY", KEYS[1], "spent", amount)
+return 1
+`;
+
+// Lua script: atomically release a previously reserved spend amount (clamp to 0).
+const SPEND_CAP_RELEASE_SCRIPT = `
+local current = tonumber(redis.call("HGET", KEYS[1], "spent") or "0")
+local amount = tonumber(ARGV[1])
+local new_val = math.max(0, current - amount)
+redis.call("HSET", KEYS[1], "spent", new_val)
+return 1
+`;
+
+async function atomicSpendCapReserve(authKey: string, amount: number): Promise<boolean> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = await (redis as any).eval(SPEND_CAP_RESERVE_SCRIPT, [authKey], [String(amount)]);
+  return result === 1;
+}
+
+async function atomicSpendCapRelease(authKey: string, amount: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (redis as any).eval(SPEND_CAP_RELEASE_SCRIPT, [authKey], [String(amount)]);
+}
 
 const X402_PAYMENT_HEADER = "x-402-payment";
 const X402_CALLER_HEADER = "x-402-caller";
@@ -97,7 +128,7 @@ export function paywall(config: PaywallConfig) {
       return;
     }
 
-    // ── Step 4: Check authorization and spend cap ──
+    // ── Step 4: Check authorization status ──
     const authData = await redis.hgetall(`auth:${callerWallet}:${serviceId}`);
     if (!authData || Object.keys(authData).length === 0) {
       res.status(403).json({ error: "No authorization found for this caller and service" });
@@ -105,27 +136,35 @@ export function paywall(config: PaywallConfig) {
     }
 
     const authRecord = authData as unknown as Record<string, unknown>;
+    const authKey = `auth:${callerWallet}:${serviceId}`;
 
     if (authRecord.status !== "active") {
       res.status(403).json({ error: `Authorization is ${authRecord.status}` });
       return;
     }
 
-    const spendCap = Number(authRecord.spendCap);
-    const spent = Number(authRecord.spent);
-
-    // Spend cap is enforced against grossAmount, not providerNet
-    if (spent + grossAmount > spendCap) {
-      res.status(403).json({
-        error: "Spend cap exceeded",
-        spendCap,
-        spent,
-        required: grossAmount,
-      });
+    // ── Step 5: Atomically reserve spend cap (Lua ensures no race) ──
+    // Over-cap rejection leaves the proof/nonce untouched — caller can retry with the same proof.
+    const withinCap = await atomicSpendCapReserve(authKey, grossAmount);
+    if (!withinCap) {
+      res.status(403).json({ error: "Spend cap exceeded", required: grossAmount });
       return;
     }
 
-    // ── Step 5: Payment verified — allow request through ──
+    // ── Step 6: Consume nonce for replay protection ──
+    // If already consumed → release the reserved cap so headroom is restored.
+    const nonceConsumed = await consumeX402Nonce(
+      callerWallet,
+      x402Result.nonce!,
+      x402Result.validBefore!
+    );
+    if (!nonceConsumed) {
+      await atomicSpendCapRelease(authKey, grossAmount);
+      res.status(402).json({ error: "Payment proof already used — replay rejected" });
+      return;
+    }
+
+    // ── Step 7: Payment verified — allow request through ──
     const breakdown = computeFeeBreakdown(grossAmount, Number(service.platformFeeBps));
 
     // Attach payment context for downstream handlers if needed
@@ -215,8 +254,7 @@ async function recordUsage(params: RecordUsageParams): Promise<void> {
   pipeline.hincrby(`wallet:${providerWallet}`, "totalEarned", breakdown.providerNet);
   pipeline.hset(`wallet:${providerWallet}`, { lastActiveAt: now.toISOString() } as Record<string, unknown>);
 
-  // Authorization spent
-  pipeline.hincrby(`auth:${callerWallet}:${serviceId}`, "spent", breakdown.grossAmount);
+  // Note: auth:*:* "spent" is already incremented atomically by atomicSpendCapReserve above.
 
   // Platform stats
   pipeline.hincrby("platform:stats", "totalVolume", breakdown.grossAmount);

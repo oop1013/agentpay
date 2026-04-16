@@ -4,6 +4,15 @@
 set -euo pipefail
 
 BASE="http://localhost:3000"
+
+# ── Pre-flight: kill any existing process on port 3000 ───────────────────────
+EXISTING_PID=$(lsof -ti :3000 2>/dev/null || true)
+if [ -n "$EXISTING_PID" ]; then
+  echo "Killing existing process on port 3000 (PID $EXISTING_PID)..."
+  kill "$EXISTING_PID" 2>/dev/null || true
+  sleep 0.5
+fi
+
 # Anvil/Hardhat test accounts (well-known Base Sepolia test keys — never use on mainnet)
 CALLER_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 CALLER_WALLET="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"

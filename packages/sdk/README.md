@@ -17,13 +17,17 @@ npm install @agentpay88/sdk express
 ```bash
 UPSTASH_REDIS_REST_URL=https://...upstash.io
 UPSTASH_REDIS_REST_TOKEN=AXxx...
+AGENTPAY_API_KEY=your-secret-api-key
 ```
+
+If `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are not set, the middleware falls back to an in-memory store. This is useful for local development and testing but **does not persist across restarts** and is not suitable for production.
 
 ### Step 2 — Register a service
 
 ```bash
 curl -X POST https://your-agentpay-server.com/api/services \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-api-key" \
   -d '{
     "providerWallet": "0xYourWalletAddress",
     "name": "My AI API",
@@ -104,6 +108,7 @@ Callers must have an active authorization record before paying. Create one via t
 ```bash
 curl -X POST https://your-agentpay-server.com/api/auth \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-api-key" \
   -d '{
     "callerWallet": "0xCallerAddress",
     "serviceId": "svc_abc123",
@@ -133,10 +138,13 @@ req.agentpay = {
 
 | Variable | Required | Description |
 |---|---|---|
-| `UPSTASH_REDIS_REST_URL` | Yes | Upstash Redis REST URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Yes | Upstash Redis REST token |
+| `UPSTASH_REDIS_REST_URL` | Prod | Upstash Redis REST URL |
+| `UPSTASH_REDIS_REST_TOKEN` | Prod | Upstash Redis REST token |
+| `AGENTPAY_API_KEY` | Prod | Secret key required to call write endpoints (`POST /api/services`, `POST /api/auth`, etc.) |
 | `BASE_SEPOLIA_RPC_URL` | No | JSON-RPC for Base Sepolia (enables on-chain settlement) |
 | `PROVIDER_PRIVATE_KEY` | No | Gas wallet private key for settlement transactions |
+
+If `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` are not set, an in-memory mock is used (local dev only — no persistence).
 
 If `BASE_SEPOLIA_RPC_URL` and `PROVIDER_PRIVATE_KEY` are not set, payment proofs are verified cryptographically but not settled on-chain. Suitable for local dev.
 

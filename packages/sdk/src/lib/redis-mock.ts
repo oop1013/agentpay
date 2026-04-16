@@ -10,6 +10,11 @@ interface ZSetEntry {
   member: string;
 }
 
+interface StringEntry {
+  value: string;
+  expiresAt?: number; // unix ms
+}
+
 class MockPipeline {
   private ops: Array<() => void> = [];
 
@@ -42,6 +47,7 @@ class MockPipeline {
 class MockRedis {
   private hashes: Map<string, HashData> = new Map();
   private zsets: Map<string, ZSetEntry[]> = new Map();
+  private strings: Map<string, StringEntry> = new Map();
 
   _hset(key: string, data: Record<string, unknown>): void {
     const existing = this.hashes.get(key) || {};
@@ -120,6 +126,52 @@ class MockRedis {
         return e.member;
       }
     }) as T[];
+  }
+
+  async set(
+    key: string,
+    value: string,
+    opts?: { nx?: boolean; ex?: number }
+  ): Promise<"OK" | null> {
+    if (opts?.nx) {
+      const existing = this.strings.get(key);
+      const now = Date.now();
+      if (existing && (!existing.expiresAt || existing.expiresAt > now)) {
+        return null; // key exists and not expired — NX condition fails
+      }
+    }
+    const entry: StringEntry = { value };
+    if (opts?.ex) {
+      entry.expiresAt = Date.now() + opts.ex * 1000;
+    }
+    this.strings.set(key, entry);
+    return "OK";
+  }
+
+  // Simulate Lua eval for the two spend-cap scripts used by paywall.
+  // Not a general Lua evaluator — dispatches by script signature.
+  async eval(script: string, keys: string[], args: string[]): Promise<unknown> {
+    // Spend cap RESERVE: HINCRBY spent by amount if within cap, else return 0
+    if (script.includes("spendCap") && script.includes("HINCRBY")) {
+      const key = keys[0];
+      const amount = Number(args[0]);
+      const data = this.hashes.get(key) || {};
+      const spent = Number(data["spent"] || 0);
+      const cap = Number(data["spendCap"] || 0);
+      if (spent + amount > cap) return 0;
+      this._hincrby(key, "spent", amount);
+      return 1;
+    }
+    // Spend cap RELEASE: clamp spent to max(0, spent - amount)
+    if (script.includes("math.max")) {
+      const key = keys[0];
+      const amount = Number(args[0]);
+      const data = this.hashes.get(key) || {};
+      const current = Number(data["spent"] || 0);
+      this._hset(key, { spent: Math.max(0, current - amount) });
+      return 1;
+    }
+    throw new Error(`MockRedis.eval: unsupported script`);
   }
 
   pipeline(): MockPipeline {
