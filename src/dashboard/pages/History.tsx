@@ -15,6 +15,11 @@ interface UsageRecord {
   timestamp: string;
 }
 
+interface Service {
+  id: string;
+  name: string;
+}
+
 export default function History() {
   const { address, isConnected } = useAccount();
 
@@ -26,6 +31,22 @@ export default function History() {
     },
     enabled: isConnected,
   });
+
+  const { data: servicesData } = useQuery({
+    queryKey: ["services"],
+    queryFn: async () => {
+      const res = await fetch("/api/services");
+      return res.json() as Promise<{ services: Service[] }>;
+    },
+  });
+
+  const serviceMap = React.useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const svc of servicesData?.services ?? []) {
+      map[svc.id] = svc.name;
+    }
+    return map;
+  }, [servicesData]);
 
   if (!isConnected) {
     return <p className="text-gray-500 text-sm">Connect wallet to view usage history.</p>;
@@ -60,7 +81,16 @@ export default function History() {
                 <td className="px-4 py-2 text-xs text-gray-600">
                   {new Date(rec.timestamp).toLocaleString()}
                 </td>
-                <td className="px-4 py-2 font-mono text-xs">{rec.serviceId}</td>
+                <td className="px-4 py-2">
+                  {serviceMap[rec.serviceId] ? (
+                    <div>
+                      <div className="font-medium">{serviceMap[rec.serviceId]}</div>
+                      <div className="text-xs text-gray-400 font-mono">{rec.serviceId}</div>
+                    </div>
+                  ) : (
+                    <span className="font-mono text-xs">{rec.serviceId}</span>
+                  )}
+                </td>
                 <td className="px-4 py-2">{formatMicroUsdc(rec.grossAmount)}</td>
                 <td className="px-4 py-2 text-gray-500">{formatMicroUsdc(rec.platformFee)}</td>
                 <td className="px-4 py-2">

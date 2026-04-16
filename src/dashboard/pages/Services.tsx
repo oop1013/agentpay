@@ -42,7 +42,8 @@ export default function Services() {
     },
   });
 
-  const [authForm, setAuthForm] = useState<{ serviceId: string; spendCap: string } | null>(null);
+  // spendCap stored as USDC string (e.g. "1.00"), converted on submit
+  const [authForm, setAuthForm] = useState<{ serviceId: string; serviceName: string; spendCapUsdc: string } | null>(null);
   const [authStatus, setAuthStatus] = useState<string | null>(null);
 
   const [showRegister, setShowRegister] = useState(false);
@@ -50,18 +51,34 @@ export default function Services() {
   const [registerStatus, setRegisterStatus] = useState<string | null>(null);
   const [registerLoading, setRegisterLoading] = useState(false);
 
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  function toggleExpand(id: string) {
+    setExpandedId((prev) => (prev === id ? null : id));
+  }
+
+  function copyToClipboard(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(key);
+      setTimeout(() => setCopiedId(null), 1500);
+    });
+  }
+
   async function handleAuthorize(e: React.FormEvent) {
     e.preventDefault();
     if (!authForm || !address) return;
 
     setAuthStatus(null);
+    const spendCapMicro = Math.round(parseFloat(authForm.spendCapUsdc) * 1_000_000);
+
     const res = await fetch("/api/auth", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         callerWallet: address,
         serviceId: authForm.serviceId,
-        spendCap: Number(authForm.spendCap),
+        spendCap: spendCapMicro,
       }),
     });
 
@@ -81,7 +98,6 @@ export default function Services() {
     setRegisterStatus(null);
     setRegisterLoading(true);
 
-    // Convert USDC to micro-USDC
     const priceInMicroUsdc = Math.round(parseFloat(registerForm.pricePerCall) * 1_000_000);
 
     try {
@@ -232,22 +248,36 @@ export default function Services() {
 
       {authForm && (
         <form onSubmit={handleAuthorize} className="mb-4 bg-white border rounded p-4">
-          <h3 className="text-sm font-bold mb-2">Authorize Service: {authForm.serviceId}</h3>
-          <label className="block text-sm mb-1">Spend Cap (micro-USDC)</label>
-          <input
-            type="number"
-            value={authForm.spendCap}
-            onChange={(e) => setAuthForm({ ...authForm, spendCap: e.target.value })}
-            className="border rounded px-2 py-1 text-sm w-48 mr-2"
-            min="1"
-            required
-          />
-          <button type="submit" className="px-3 py-1 bg-gray-900 text-white rounded text-sm hover:bg-gray-700">
-            Confirm
-          </button>
-          <button type="button" onClick={() => setAuthForm(null)} className="ml-2 px-3 py-1 border rounded text-sm">
-            Cancel
-          </button>
+          <h3 className="text-sm font-bold mb-3">Authorize: {authForm.serviceName}</h3>
+          <div className="mb-3">
+            <label className="block text-xs text-gray-600 mb-1">Spend Cap (USDC)</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={authForm.spendCapUsdc}
+                onChange={(e) => setAuthForm({ ...authForm, spendCapUsdc: e.target.value })}
+                className="border rounded px-2 py-1 text-sm w-36"
+                min="0.000001"
+                step="0.000001"
+                placeholder="1.00"
+                required
+              />
+              <span className="text-xs text-gray-500">USDC</span>
+              {authForm.spendCapUsdc && !isNaN(parseFloat(authForm.spendCapUsdc)) && (
+                <span className="text-xs text-gray-400">
+                  = {Math.round(parseFloat(authForm.spendCapUsdc) * 1_000_000).toLocaleString()} micro-USDC
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button type="submit" className="px-3 py-1 bg-gray-900 text-white rounded text-sm hover:bg-gray-700">
+              Confirm
+            </button>
+            <button type="button" onClick={() => setAuthForm(null)} className="px-3 py-1 border rounded text-sm">
+              Cancel
+            </button>
+          </div>
         </form>
       )}
 
@@ -267,38 +297,109 @@ export default function Services() {
             <tr className="border-b bg-gray-50 text-left">
               <th className="px-4 py-2">Name</th>
               <th className="px-4 py-2">Category</th>
+              <th className="px-4 py-2">Endpoint</th>
               <th className="px-4 py-2">Price</th>
               <th className="px-4 py-2">Status</th>
-              <th className="px-4 py-2">Total Calls</th>
+              <th className="px-4 py-2">Calls</th>
               <th className="px-4 py-2"></th>
             </tr>
           </thead>
           <tbody>
             {data.services.map((svc) => (
-              <tr key={svc.id} className="border-b hover:bg-gray-50">
-                <td className="px-4 py-2">
-                  <div className="font-medium">{svc.name}</div>
-                  <div className="text-xs text-gray-400 font-mono">{svc.id}</div>
-                </td>
-                <td className="px-4 py-2">{svc.category}</td>
-                <td className="px-4 py-2">{formatMicroUsdc(svc.pricePerCall)}</td>
-                <td className="px-4 py-2">
-                  <span className={`inline-block px-2 py-0.5 rounded text-xs ${svc.status === "active" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                    {svc.status}
-                  </span>
-                </td>
-                <td className="px-4 py-2">{svc.totalCalls}</td>
-                <td className="px-4 py-2">
-                  {address && (
-                    <button
-                      onClick={() => setAuthForm({ serviceId: svc.id, spendCap: String(svc.pricePerCall * 100) })}
-                      className="px-2 py-1 border rounded text-xs hover:bg-gray-100"
-                    >
-                      Authorize
-                    </button>
-                  )}
-                </td>
-              </tr>
+              <React.Fragment key={svc.id}>
+                <tr className="border-b hover:bg-gray-50">
+                  <td className="px-4 py-2">
+                    <div className="font-medium">{svc.name}</div>
+                    <div className="text-xs text-gray-400 font-mono">{svc.id}</div>
+                  </td>
+                  <td className="px-4 py-2">{svc.category}</td>
+                  <td className="px-4 py-2 max-w-xs">
+                    <div className="flex items-center gap-1">
+                      <span className="font-mono text-xs text-gray-700 truncate max-w-[180px]" title={svc.endpoint}>
+                        {svc.endpoint}
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(svc.endpoint, `ep-${svc.id}`)}
+                        className="shrink-0 text-xs text-gray-400 hover:text-gray-700 px-1"
+                        title="Copy URL"
+                      >
+                        {copiedId === `ep-${svc.id}` ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2">{formatMicroUsdc(svc.pricePerCall)}</td>
+                  <td className="px-4 py-2">
+                    <span className={`inline-block px-2 py-0.5 rounded text-xs ${svc.status === "active" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                      {svc.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2">{svc.totalCalls}</td>
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => toggleExpand(svc.id)}
+                        className="px-2 py-1 border rounded text-xs hover:bg-gray-100"
+                      >
+                        {expandedId === svc.id ? "Hide" : "Details"}
+                      </button>
+                      {address && (
+                        <button
+                          onClick={() => setAuthForm({ serviceId: svc.id, serviceName: svc.name, spendCapUsdc: "1.00" })}
+                          className="px-2 py-1 border rounded text-xs hover:bg-gray-100"
+                        >
+                          Authorize
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                {expandedId === svc.id && (
+                  <tr className="border-b bg-gray-50">
+                    <td colSpan={7} className="px-6 py-4">
+                      <div className="grid grid-cols-2 gap-6 text-sm">
+                        <div>
+                          <div className="mb-3">
+                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Description</span>
+                            <p className="mt-1 text-gray-700">{svc.description || "No description provided."}</p>
+                          </div>
+                          <div className="mb-3">
+                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Endpoint URL</span>
+                            <div className="mt-1 flex items-center gap-2">
+                              <code className="font-mono text-xs bg-white border rounded px-2 py-1 text-gray-800 break-all">{svc.endpoint}</code>
+                              <button
+                                onClick={() => copyToClipboard(svc.endpoint, `detail-ep-${svc.id}`)}
+                                className="shrink-0 text-xs text-gray-400 hover:text-gray-700 border rounded px-2 py-1"
+                              >
+                                {copiedId === `detail-ep-${svc.id}` ? "Copied!" : "Copy"}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mb-3">
+                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Price per call</span>
+                            <p className="mt-1 text-gray-700">{formatMicroUsdc(svc.pricePerCall)}</p>
+                          </div>
+                          <div>
+                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Provider wallet</span>
+                            <p className="mt-1 font-mono text-xs text-gray-600">{truncateAddress(svc.providerWallet)}</p>
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Integration</span>
+                          <div className="mt-1 relative">
+                            <pre className="bg-gray-900 text-gray-100 rounded p-3 text-xs overflow-x-auto leading-relaxed">{`import { payFetch } from '@agentpay/client';\n\nconst res = await payFetch('${svc.endpoint}');`}</pre>
+                            <button
+                              onClick={() => copyToClipboard(`import { payFetch } from '@agentpay/client';\n\nconst res = await payFetch('${svc.endpoint}');`, `snippet-${svc.id}`)}
+                              className="absolute top-2 right-2 text-xs text-gray-400 hover:text-white border border-gray-600 rounded px-2 py-0.5"
+                            >
+                              {copiedId === `snippet-${svc.id}` ? "Copied!" : "Copy"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -311,4 +412,9 @@ function formatMicroUsdc(micro: number | string): string {
   const val = Number(micro);
   if (val === 0) return "0 USDC";
   return `${(val / 1_000_000).toFixed(6)} USDC`;
+}
+
+function truncateAddress(addr: string): string {
+  if (!addr || addr.length < 10) return addr;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
