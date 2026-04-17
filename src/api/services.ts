@@ -74,11 +74,20 @@ router.post("/", async (req: Request, res: Response) => {
   res.status(201).json(service);
 });
 
-// GET /api/services — list all services (optionally filtered by ?providerWallet=0x...)
+// GET /api/services — list services with optional filter/search/sort
 router.get("/", async (req: Request, res: Response) => {
   const rawWallet = req.query.providerWallet as string | undefined;
-  let filterWallet: string | null = null;
+  const categoryFilter = req.query.category as string | undefined;
+  const searchTerm = req.query.search as string | undefined;
+  const statusFilter = (req.query.status as string | undefined) ?? "active";
+  const sortBy = (req.query.sortBy as string | undefined) ?? "newest";
 
+  if (sortBy !== "newest" && sortBy !== "popular") {
+    res.status(400).json({ error: "Invalid sortBy: must be 'newest' or 'popular'" });
+    return;
+  }
+
+  let filterWallet: string | null = null;
   if (rawWallet !== undefined) {
     if (!isValidAddress(rawWallet)) {
       res.status(400).json({ error: "Invalid providerWallet address" });
@@ -86,6 +95,8 @@ router.get("/", async (req: Request, res: Response) => {
     }
     filterWallet = normalizeAddress(rawWallet);
   }
+
+  const searchLower = searchTerm ? searchTerm.toLowerCase() : null;
 
   const services: Record<string, unknown>[] = [];
   let cursor = 0;
@@ -97,13 +108,30 @@ router.get("/", async (req: Request, res: Response) => {
     cursor = typeof nextCursor === "string" ? parseInt(nextCursor, 10) : nextCursor;
     for (const key of keys) {
       const data = await redis.hgetall(key as string);
-      if (data && Object.keys(data).length > 0) {
-        if (filterWallet === null || (data.providerWallet as string) === filterWallet) {
-          services.push(data);
-        }
+      if (!data || Object.keys(data).length === 0) continue;
+
+      if (filterWallet !== null && (data.providerWallet as string) !== filterWallet) continue;
+      if ((data.status as string) !== statusFilter) continue;
+      if (categoryFilter !== undefined && (data.category as string) !== categoryFilter) continue;
+      if (searchLower !== null) {
+        const nameMatch = (data.name as string ?? "").toLowerCase().includes(searchLower);
+        const descMatch = (data.description as string ?? "").toLowerCase().includes(searchLower);
+        if (!nameMatch && !descMatch) continue;
       }
+
+      services.push(data);
     }
   } while (cursor !== 0);
+
+  if (sortBy === "popular") {
+    services.sort((a, b) => Number(b.totalCalls ?? 0) - Number(a.totalCalls ?? 0));
+  } else {
+    services.sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt as string).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt as string).getTime() : 0;
+      return bTime - aTime;
+    });
+  }
 
   res.json({ services });
 });
