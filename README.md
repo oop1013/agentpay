@@ -9,6 +9,15 @@ AgentPay solves two problems:
 1. **API developers** cannot easily charge micro-amounts like $0.01 per call — payment rails are too heavyweight.
 2. **Agents** cannot autonomously pay for services and be tracked safely.
 
+## Status
+
+AgentPay is now publicly available as an early-stage open-source SDK and payment rail for paid APIs and autonomous-agent service calls.
+
+Current status:
+- local quickstart works
+- first-user demo flow works
+- known limitations are documented in `KNOWN_ISSUES.md`
+  
 AgentPay solves both:
 
 - Billing + payment middleware for machine-callable services (`@agentpay88/sdk`)
