@@ -25,6 +25,23 @@ AgentPay solves both:
 - Authorization, spend caps, usage records, and earnings accounting — all server-side
 - A web dashboard for humans to manage authorizations and view usage
 
+## Who is this for?
+
+AgentPay is for:
+- API developers who want pay-per-call monetization
+- builders experimenting with autonomous agent spending
+- teams who need spend caps, authorization, and earnings visibility for machine-callable services
+
+## Why AgentPay?
+
+Most payment rails are too heavy for $0.01 service calls.
+
+AgentPay makes small paid service calls practical by combining:
+- paywall middleware for APIs
+- automatic client payment + retry
+- spend caps and authorization
+- usage and earnings tracking
+
 ## Architecture
 
 ```
@@ -69,6 +86,8 @@ AgentPay solves both:
 | [`@agentpay88/sdk`](./packages/sdk/README.md) | Server-side Express middleware for protecting endpoints |
 | [`@agentpay88/client`](./packages/client/README.md) | Client-side fetch wrapper that auto-pays 402 responses |
 
+
+
 ---
 
 ## Quickstart (local dev)
@@ -84,7 +103,7 @@ AgentPay solves both:
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/agentpay/agentpay.git
+git clone https://github.com/oop1013/agentpay.git
 cd agentpay
 npm install
 ```
