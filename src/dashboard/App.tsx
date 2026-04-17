@@ -6,6 +6,7 @@ import Services from "./pages/Services";
 import Provider from "./pages/Provider";
 import History from "./pages/History";
 import Authorizations from "./pages/Authorizations";
+import Marketplace from "./pages/Marketplace";
 import Quickstart from "./pages/Quickstart";
 
 class ErrorBoundary extends React.Component<
@@ -43,6 +44,7 @@ class ErrorBoundary extends React.Component<
 const navItems = [
   { to: "/", label: "Home" },
   { to: "/quickstart", label: "Quickstart" },
+  { to: "/marketplace", label: "Marketplace" },
   { to: "/browse", label: "Browse" },
   { to: "/services", label: "Services" },
   { to: "/provider", label: "Provider" },
@@ -79,6 +81,7 @@ export default function App() {
         <main className="flex-1 p-6">
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/browse" element={<Browse />} />
             <Route path="/services" element={<Services />} />
             <Route path="/provider" element={<Provider />} />
