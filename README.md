@@ -75,7 +75,7 @@ AgentPay solves both:
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/your-org/agentpay.git
+git clone https://github.com/agentpay/agentpay.git
 cd agentpay
 npm install
 ```
@@ -297,7 +297,7 @@ curl "http://localhost:3000/api/usage?walletAddress=0xCallerAddress"
 | `BASE_SEPOLIA_RPC_URL` | No | JSON-RPC for Base Sepolia. Enables on-chain settlement. |
 | `PROVIDER_PRIVATE_KEY` | No | Gas wallet private key for `receiveWithAuthorization` transactions |
 | `AGENTPAY_API_KEY` | Prod | Protects write endpoints (wallets, services, auth). Not required for local dev. |
-| `AGENTMART_ORIGIN` | No | Additional CORS origin (e.g. your AgentMart deployment URL) |
+| `ADDITIONAL_CORS_ORIGIN` | No | Additional CORS origin for browser-side cross-origin requests (no trailing slash) |
 
 ---
 

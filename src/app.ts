@@ -17,10 +17,8 @@ const app = express();
 const allowedOrigins = [
   "https://agentpay.xyz",
   "https://agentpay-phi.vercel.app",
-  // Known AgentMart production origin
-  "https://agentmart-livid.vercel.app",
-  // AgentMart origin override — set AGENTMART_ORIGIN in env to allow additional origins
-  ...(process.env.AGENTMART_ORIGIN ? [process.env.AGENTMART_ORIGIN] : []),
+  // Additional origin override — set ADDITIONAL_CORS_ORIGIN in env to allow extra origins
+  ...(process.env.ADDITIONAL_CORS_ORIGIN ? [process.env.ADDITIONAL_CORS_ORIGIN] : []),
 ];
 app.use(
   cors({

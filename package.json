@@ -20,9 +20,13 @@
     "test": "vitest run"
   },
   "keywords": [],
-  "author": "",
+  "author": "AgentPay",
   "license": "ISC",
-  "description": "",
+  "description": "Machine-payments control plane for APIs and agents",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentpay/agentpay"
+  },
   "dependencies": {
     "@tanstack/react-query": "^5.96.2",
     "@types/cors": "^2.8.19",

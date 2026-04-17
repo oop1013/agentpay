@@ -4,7 +4,6 @@ import { normalizeAddress } from "./addresses";
 
 /**
  * Register a wallet if it doesn't exist, or return the existing one.
- * This is the single source of truth for wallet identity across AgentPay and AgentMart.
  */
 export async function registerOrGetWallet(params: {
   address: string;
