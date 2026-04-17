@@ -95,6 +95,25 @@ The SDK does not implicitly create services. If `serviceId` does not exist in Re
 
 **Workaround:** Always run as `bash test.sh` from the project root (`/mnt/e/agentpay`).
 
+### `test.sh` service-stat assertions can fail with fast Upstash connections
+**Friction:** After a successful paid call, usage recording runs asynchronously (via `res.on("finish", ...)`). With Upstash REST API, the Redis pipeline round-trip takes 300–700ms. The original 0.5s sleep before the stat-check step was insufficient on slower connections, causing `totalCalls` and `grossVolume` to read as `0` even though the call succeeded.
+
+**Status:** Fixed in test.sh — sleep increased to 2s before service-stat assertions.
+
+---
+
+## API shape rough edges
+
+### Wallet earnings nested under `_wallet` in GET /api/wallets/:address
+**Friction:** `GET /api/wallets/:address` and `POST /api/wallets` return a merged shape where the top-level object is the shared identity (`address`, `type`, `displayName`, `registeredAt`) and the full wallet record (including `totalEarned`, `totalSpent`, `lastActiveAt`) is nested under the `_wallet` key. Consumers expecting flat `totalEarned` at the top level will get `undefined`.
+
+**Workaround:** Access earnings via `response._wallet.totalEarned` and `response._wallet.totalSpent`. This shape is intentional for Phase 1 — the top-level fields are the cross-system shared identity; the `_wallet` sub-object is the AgentPay-internal accounting view.
+
+### Write endpoints require API key when AGENTPAY_API_KEY is set
+**Friction:** `POST /api/services`, `POST /api/wallets`, and `POST /api/auth` return `401 Unauthorized` if `AGENTPAY_API_KEY` is configured in the environment but the caller does not include `Authorization: Bearer <key>` or `X-Api-Key: <key>`. In local dev without the env var, these endpoints are open. The switch in behaviour between configured and unconfigured deployments can cause 401s that are surprising if the key is set but the client doesn't know to send it.
+
+**Workaround:** Always include the API key header in automated scripts and integrations. Check `.env` for `AGENTPAY_API_KEY` value. `test.sh` reads it automatically from `.env`.
+
 ---
 
 ## Not in Phase 1

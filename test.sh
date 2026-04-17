@@ -238,8 +238,10 @@ assert_status "Paywall grants paid request" "200" "$HTTP_CODE"
 assert_json_field "Response data" "$BODY" "message" "Access granted — you paid for this!"
 echo ""
 
-# Small delay to let the async usage recording complete
-sleep 0.5
+# Delay to let the async usage recording complete.
+# With Upstash REST API, the pipeline round-trip can take 300-700ms;
+# use 2s to avoid flaky failures on slower connections.
+sleep 2
 
 # ── 6. Verify platform stats updated ────────────────────────────────────────
 
