@@ -67,7 +67,7 @@ app.use((req, res, next) => {
 
 // Write endpoints require API key; read endpoints are public
 app.use("/api/services", (req, res, next) => {
-  if (req.method === "POST") return requireApiKey(req, res, next);
+  if (req.method === "POST" || req.method === "PATCH") return requireApiKey(req, res, next);
   next();
 }, servicesRouter);
 app.use("/api/wallets", (req, res, next) => {
@@ -84,6 +84,10 @@ app.use("/api/platform", platformRouter);
 app.use("/api/demo", demoRouter);
 
 app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 

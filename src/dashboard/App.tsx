@@ -1,6 +1,7 @@
 import React from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
 import Home from "./pages/Home";
+import Browse from "./pages/Browse";
 import Services from "./pages/Services";
 import Provider from "./pages/Provider";
 import History from "./pages/History";
@@ -42,6 +43,7 @@ class ErrorBoundary extends React.Component<
 const navItems = [
   { to: "/", label: "Home" },
   { to: "/quickstart", label: "Quickstart" },
+  { to: "/browse", label: "Browse" },
   { to: "/services", label: "Services" },
   { to: "/provider", label: "Provider" },
   { to: "/history", label: "History" },
@@ -77,6 +79,7 @@ export default function App() {
         <main className="flex-1 p-6">
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/browse" element={<Browse />} />
             <Route path="/services" element={<Services />} />
             <Route path="/provider" element={<Provider />} />
             <Route path="/history" element={<History />} />
