@@ -17,7 +17,8 @@
     "dev": "tsx src/index.ts",
     "dev:dashboard": "vite",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:regression": "vitest run src/__tests__/regression/"
   },
   "keywords": [],
   "author": "AgentPay",

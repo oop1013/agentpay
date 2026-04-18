@@ -151,15 +151,16 @@ curl http://localhost:3000/health
 # → {"status":"ok"}
 ```
 
-### 5. Create the demo service
+### 5. Verify the demo service is ready
 
-The demo service (`/api/demo/echo`) is a pre-built paid endpoint useful for testing. Set it up with:
+The demo service (`/api/demo/echo`) auto-initializes on server startup — no manual setup needed. Confirm it is registered:
 
 ```bash
 curl http://localhost:3000/api/demo/setup
+# → {"created":false,"service":{"id":"svc_demo","name":"Demo Echo API",...}}
 ```
 
-Note the returned `id` (e.g. `svc_demo`) and `pricePerCall` (10000 micro-USDC = 0.01 USDC).
+The `"created":false` response means the service already exists (initialized at startup). The endpoint `GET /api/demo/setup` is kept for backwards compatibility and verification only.
 
 ### 6. Register a caller wallet
 
@@ -209,6 +210,17 @@ console.log(data);
 // → { message: "Payment verified — welcome to the AgentPay Demo Echo API!", payment: { ... } }
 ```
 
+> **If you get a `402`** without a client, the response now includes auth guidance:
+> ```json
+> {
+>   "status": 402,
+>   "authRequired": true,
+>   "authorizationEndpoint": "/api/auth",
+>   "authMessage": "Payment proof required. If you haven't authorized this caller wallet for this service, POST to /api/auth first with {callerWallet, serviceId, spendCap}."
+> }
+> ```
+> This tells you to call `POST /api/auth` (Step 7 above) before attempting paid calls.
+
 See [`packages/client/README.md`](./packages/client/README.md) for full API docs.
 
 ### 9. Check the dashboard
@@ -226,6 +238,20 @@ Connect your wallet (MetaMask / WalletConnect) and navigate to:
 - **History** — shows usage records for your wallet
 - **Authorizations** — shows spend caps and authorization status
 - **Provider** — shows earnings if your wallet is a provider
+
+---
+
+## Recommended starting point
+
+The [`examples/weather-provider/`](./examples/weather-provider/) directory is a minimal, copy-paste-ready provider template. It wraps a mock weather endpoint with `paywall()` and includes a full step-by-step README from zero to a working paid API.
+
+```bash
+cd examples/weather-provider
+npm install
+npm start
+```
+
+See [`examples/weather-provider/README.md`](./examples/weather-provider/README.md) for the full walkthrough.
 
 ---
 
@@ -278,7 +304,8 @@ app.post(
   paywall({ serviceId: "svc_abc123" }),
   (req, res) => {
     console.log("Payment:", req.agentpay);
-    // → { serviceId, callerWallet, grossAmount, platformFee, providerNet, verified: true }
+    // → { serviceId, callerWallet, providerWallet, grossAmount, platformFee, providerNet, verified: true }
+    // req.agentpay is fully typed via Express module augmentation — no cast needed.
     res.json({ result: "Here is your AI-generated content." });
   }
 );

@@ -1,6 +1,6 @@
-# Known Issues and Phase 1 Limitations
+# Known Issues and Limitations
 
-This document lists known limitations and friction points for Phase 1 of AgentPay. These are intentional scope decisions, not bugs, unless noted otherwise.
+This document lists known limitations and friction points for AgentPay. Resolved items are marked **[FIXED in Phase 2]**. Intentional scope decisions are noted as such.
 
 ---
 
@@ -11,20 +11,24 @@ This document lists known limitations and friction points for Phase 1 of AgentPa
 
 **Workaround:** Use the in-memory mock for quick local testing. Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` before going to production or multi-session testing.
 
-### API key required for write endpoints in production
-**Friction:** `POST /api/services`, `POST /api/wallets`, and `POST /api/auth` require an `Authorization: Bearer <key>` or `X-Api-Key` header when `AGENTPAY_API_KEY` is set in the environment. This is not enforced in local dev but will silently cause 401s if `AGENTPAY_API_KEY` is set without the client knowing to send it.
+### API key required for write endpoints in production — **[IMPROVED in Phase 2]**
+**Friction:** `POST /api/services`, `POST /api/wallets`, and `POST /api/auth` require an `Authorization: Bearer <key>` or `X-Api-Key` header when `AGENTPAY_API_KEY` is set in the environment. This is not enforced in local dev (omit the env var).
 
-**Workaround:** Leave `AGENTPAY_API_KEY` unset for local development. Document the key clearly for production deployments.
+**Improvement:** The `401` response now includes a `hint` field with the exact required header format (`Authorization: Bearer <key>` or `X-Api-Key: <key>`), so callers no longer have to guess the format.
 
-### Demo service must be explicitly initialized
-**Friction:** The demo endpoint (`GET /api/demo/echo`) returns `{"error":"Service not configured"}` (HTTP 500) if `GET /api/demo/setup` has not been called first. The error message is clear but the required setup step is not immediately obvious. The in-memory mock doesn't persist across restarts, so `GET /api/demo/setup` must be called again each time the server restarts without Upstash credentials.
+**Workaround:** Leave `AGENTPAY_API_KEY` unset for local development. Set it in production and include the header in all write requests.
 
-**Workaround:** Always call `GET /api/demo/setup` before testing the demo endpoint. The quickstart guide covers this step.
+### ~~Demo service must be explicitly initialized~~ **[FIXED in Phase 2]**
+**Previously:** The demo endpoint returned a 500 if `GET /api/demo/setup` had not been called first.
 
-### Authorization must be created before payment
-**Friction:** A caller wallet must have an active authorization record for each service before any payment can succeed. The 402 response does not explain this requirement — callers see a generic 402 and may not know to call `POST /api/auth` first.
+**Fix:** `initDemoService()` is now called automatically at server startup (non-blocking). The demo service (`svc_demo`) is registered before the server accepts its first requests. `GET /api/demo/setup` is kept for verification and backwards compatibility but is no longer required.
 
-**Workaround:** Register both wallet and authorization as part of onboarding. The quickstart covers this step.
+### Authorization must be created before payment — **[IMPROVED in Phase 2]**
+**Friction:** A caller wallet must have an active authorization record for each service before any payment can succeed.
+
+**Improvement:** The `402` response now includes `authRequired: true`, `authorizationEndpoint: "/api/auth"`, and a plain-English `authMessage` that tells callers to `POST /api/auth` first with `{callerWallet, serviceId, spendCap}`. The hidden step is now surfaced in the error response.
+
+**Remaining:** Callers still need to create an authorization explicitly — this requirement has not been removed, only made visible via the improved 402 body.
 
 ### USDC on Base Sepolia required for real payment proofs
 **Friction:** Making a real paid request requires the caller wallet to hold USDC on Base Sepolia. Getting testnet USDC requires using the Coinbase Base Sepolia faucet or a bridge. This is a meaningful barrier for new developers who want to quickly test the end-to-end flow.
@@ -70,11 +74,15 @@ In off-chain-only mode (no `PROVIDER_PRIVATE_KEY` set), the server checks proof 
 ### `@agentpay88/sdk` requires environment variables at startup
 The SDK reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` when it imports. If these are missing, it falls back to the in-memory mock. There is no way to pass Redis config programmatically at paywall construction time.
 
-### `paywall()` requires a pre-registered service
-The SDK does not implicitly create services. If `serviceId` does not exist in Redis, the middleware returns a `500` error rather than a meaningful `400/404` response. Always create the service via `POST /api/services` before deploying the middleware.
+### ~~`paywall()` requires a pre-registered service returns 500~~ **[FIXED in Phase 2]**
+**Previously:** If `serviceId` did not exist in Redis, the middleware returned a `500` error.
 
-### No TypeScript types exported for `req.agentpay`
-`req.agentpay` is added to the Express Request object by the paywall middleware but is typed as `any` in downstream handlers. TypeScript consumers need to cast or add module augmentation themselves.
+**Fix:** Unknown `serviceId` now returns `404 Not Found` with `{ "error": "Service not found", "serviceId": "..." }`. Always register the service via `POST /api/services` before deploying the middleware.
+
+### ~~No TypeScript types exported for `req.agentpay`~~ **[FIXED in Phase 2]**
+**Previously:** `req.agentpay` was typed as `any` and required manual module augmentation.
+
+**Fix:** `packages/sdk/src/types.ts` now exports an Express module augmentation that types `req.agentpay` as `{ serviceId, callerWallet, providerWallet, grossAmount, platformFee, providerNet, feeBps, verified }`. No cast needed in downstream handlers.
 
 ---
 
@@ -116,7 +124,23 @@ The SDK does not implicitly create services. If `serviceId` does not exist in Re
 
 ---
 
-## Not in Phase 1
+## Phase 2 additions (not limitations)
+
+The following were rough edges in Phase 1 and were improved in Phase 2:
+
+- **Demo service auto-init** — no manual `GET /api/demo/setup` call needed on startup
+- **402 auth guidance** — response body now includes `authRequired`, `authorizationEndpoint`, and `authMessage`
+- **401 hint field** — 401 responses on write endpoints include exact header format
+- **404 for unknown service** — `paywall()` returns `404` with `serviceId` instead of `500`
+- **`req.agentpay` TypeScript types** — full Express module augmentation in `packages/sdk/src/types.ts`
+- **Manifest auth field** — `GET /api/services/:id/manifest` includes `auth.required`, `auth.endpoint`, `auth.description`
+- **SDK programmatic Redis config** — `paywall({ serviceId, redis: { url, token } })` accepts explicit Redis credentials instead of env-only
+- **Weather provider example** — `examples/weather-provider/` is a minimal, copy-paste-ready provider template
+- **Regression test pack** — `npm run test:regression` covers provider journey, manifest contract, paused-service 410, and auth/payment flow
+
+---
+
+## Not in scope (intentionally deferred)
 
 These are out of scope by design:
 
