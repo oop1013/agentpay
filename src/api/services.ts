@@ -147,6 +147,39 @@ router.get("/:id", async (req: Request, res: Response) => {
   res.json(data);
 });
 
+// GET /api/services/:id/manifest — return capability manifest v0 (public, no auth)
+router.get("/:id/manifest", async (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  const data = await redis.hgetall(`service:${id}`);
+  if (!data || Object.keys(data).length === 0) {
+    res.status(404).json({ error: "Service not found" });
+    return;
+  }
+
+  const manifest = {
+    manifestVersion: "0.1.0",
+    serviceId: data.id as string,
+    name: data.name as string,
+    description: (data.description as string) ?? "",
+    provider: {
+      wallet: data.providerWallet as string,
+    },
+    endpoint: data.endpoint as string,
+    pricing: {
+      model: "per_call",
+      amount: Number(data.pricePerCall),
+      currency: "USDC",
+      unit: "micro-USDC",
+      platformFeeBps: Number(data.platformFeeBps),
+    },
+    capabilities: [],
+    status: data.status as string,
+    createdAt: data.createdAt as string,
+  };
+
+  res.json(manifest);
+});
+
 const patchServiceSchema = z.object({
   providerWallet: z.string().min(1),
   name: z.string().min(1).max(100).optional(),
