@@ -178,6 +178,11 @@ router.get("/:id/manifest", async (req: Request, res: Response) => {
       platformFeeBps: Number(data.platformFeeBps),
     },
     capabilities: [],
+    auth: {
+      required: true,
+      endpoint: "/api/auth",
+      description: "Caller must create an authorization with spend cap before making paid requests",
+    },
     status: data.status as string,
     createdAt: data.createdAt as string,
   };

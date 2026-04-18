@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
-import { redis } from "./lib/redis";
+import { Redis } from "@upstash/redis";
+import { redis as defaultRedis } from "./lib/redis";
 import { Service, UsageRecord, UsageStatus } from "./lib/types";
 import { normalizeAddress } from "./lib/addresses";
 import { computeFeeBreakdown } from "./lib/fees";
@@ -26,22 +27,33 @@ redis.call("HSET", KEYS[1], "spent", new_val)
 return 1
 `;
 
-async function atomicSpendCapReserve(authKey: string, amount: number): Promise<boolean> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await (redis as any).eval(SPEND_CAP_RESERVE_SCRIPT, [authKey], [String(amount)]);
-  return result === 1;
+function makeSpendCapReserve(redis: Redis) {
+  return async (authKey: string, amount: number): Promise<boolean> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (redis as any).eval(SPEND_CAP_RESERVE_SCRIPT, [authKey], [String(amount)]);
+    return result === 1;
+  };
 }
 
-async function atomicSpendCapRelease(authKey: string, amount: number): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (redis as any).eval(SPEND_CAP_RELEASE_SCRIPT, [authKey], [String(amount)]);
+function makeSpendCapRelease(redis: Redis) {
+  return async (authKey: string, amount: number): Promise<void> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (redis as any).eval(SPEND_CAP_RELEASE_SCRIPT, [authKey], [String(amount)]);
+  };
 }
 
 const X402_PAYMENT_HEADER = "x-402-payment";
 const X402_CALLER_HEADER = "x-402-caller";
 
+export interface RedisConfig {
+  url: string;
+  token: string;
+}
+
 export interface PaywallConfig {
   serviceId: string;
+  /** Optional programmatic Redis credentials. Takes precedence over env vars. */
+  redis?: RedisConfig;
 }
 
 /**
@@ -59,6 +71,11 @@ export interface PaywallConfig {
  */
 export function paywall(config: PaywallConfig) {
   const { serviceId } = config;
+  const redis = config.redis
+    ? new Redis({ url: config.redis.url, token: config.redis.token })
+    : defaultRedis;
+  const atomicSpendCapReserve = makeSpendCapReserve(redis);
+  const atomicSpendCapRelease = makeSpendCapRelease(redis);
 
   return async (req: Request, res: Response, next: NextFunction) => {
     const startTime = Date.now();
@@ -168,7 +185,7 @@ export function paywall(config: PaywallConfig) {
     const breakdown = computeFeeBreakdown(grossAmount, Number(service.platformFeeBps));
 
     // Attach payment context for downstream handlers if needed
-    (req as any).agentpay = {
+    req.agentpay = {
       serviceId,
       callerWallet,
       providerWallet: service.providerWallet,
@@ -185,6 +202,7 @@ export function paywall(config: PaywallConfig) {
       }
 
       recordUsage({
+        redis,
         serviceId,
         callerWallet,
         providerWallet: service.providerWallet,
@@ -201,6 +219,7 @@ export function paywall(config: PaywallConfig) {
 }
 
 interface RecordUsageParams {
+  redis: Redis;
   serviceId: string;
   callerWallet: string;
   providerWallet: string;
@@ -210,7 +229,7 @@ interface RecordUsageParams {
 }
 
 async function recordUsage(params: RecordUsageParams): Promise<void> {
-  const { serviceId, callerWallet, providerWallet, breakdown, status, latencyMs } = params;
+  const { redis, serviceId, callerWallet, providerWallet, breakdown, status, latencyMs } = params;
   const now = new Date();
 
   const record: UsageRecord = {
