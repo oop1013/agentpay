@@ -15,19 +15,16 @@ const DEMO_PROVIDER_WALLET =
   "0x000000000000000000000000000000000000dead";
 
 /**
- * GET /api/demo/setup
- *
  * Idempotent — creates the demo service if it doesn't already exist.
- * Returns the service record so callers know the serviceId and pricePerCall.
+ * Returns true if created, false if already existed.
  * Safe to call multiple times.
  */
-router.get("/setup", async (_req: Request, res: Response) => {
+export async function initDemoService(): Promise<boolean> {
   const key = `service:${DEMO_SERVICE_ID}`;
   const existing = await redis.hgetall(key);
 
   if (existing && Object.keys(existing).length > 0) {
-    res.json({ created: false, service: existing });
-    return;
+    return false;
   }
 
   const baseUrl =
@@ -56,7 +53,24 @@ router.get("/setup", async (_req: Request, res: Response) => {
   await redis.hset(key, service as unknown as Record<string, unknown>);
   await redis.hincrby("platform:stats", "totalServices", 1);
 
-  res.status(201).json({ created: true, service });
+  return true;
+}
+
+/**
+ * GET /api/demo/setup
+ *
+ * Idempotent — kept for backwards compatibility but no longer required on startup.
+ * Returns the service record so callers know the serviceId and pricePerCall.
+ */
+router.get("/setup", async (_req: Request, res: Response) => {
+  const created = await initDemoService();
+  const key = `service:${DEMO_SERVICE_ID}`;
+  const service = await redis.hgetall(key);
+  if (created) {
+    res.status(201).json({ created: true, service });
+  } else {
+    res.json({ created: false, service });
+  }
 });
 
 /**

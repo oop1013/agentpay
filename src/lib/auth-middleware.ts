@@ -25,7 +25,7 @@ export function requireApiKey(req: Request, res: Response, next: NextFunction): 
   }
 
   if (!providedKey || providedKey !== configuredKey) {
-    res.status(401).json({ error: "Missing or invalid API key" });
+    res.status(401).json({ error: "API key required", hint: "Include Authorization: Bearer <key> or X-Api-Key: <key> header" });
     return;
   }
 
