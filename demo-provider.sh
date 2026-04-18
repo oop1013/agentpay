@@ -2,14 +2,15 @@
 # ═════════════════════════════════════════════════════════���═════════════════
 # demo-provider.sh — AgentPay provider onboarding journey
 #
-# Walks through all 7 Phase 1 success conditions end-to-end:
+# Walks through all 8 Phase 1 success conditions end-to-end:
 #   1) Register a service
 #   2) Show paywall middleware (402 on unpaid request)
 #   3) Send unpaid request — receives 402
-#   4) Sign EIP-712 payment proof
-#   5) Send paid request — receives 200
-#   6) View receipt/log (provider earnings)
-#   7) View capability manifest JSON
+#   4) Authorize caller (spend cap)
+#   5) Sign EIP-712 payment proof
+#   6) Send paid request — receives 200
+#   7) View receipt/log (provider earnings)
+#   8) View capability manifest JSON
 #
 # Prerequisites:
 #   - AgentPay server running at localhost:3000 (run: npx tsx src/index.ts)
@@ -169,9 +170,38 @@ fi
 
 echo ""
 
-# ── Step 4: Sign EIP-712 payment proof ───────────────────────────────────────
+# ── Step 4: Authorize caller (spend cap) ─────────────────────────────────────
 
-bold "Step 4 — Sign EIP-712 payment proof"
+bold "Step 4 — Authorize caller (spend cap)"
+dim "  POST $BASE/api/auth"
+
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$BASE/api/auth" \
+  -H "Content-Type: application/json" \
+  "${AUTH_HEADER_ARGS[@]:-}" \
+  -d "{
+    \"callerWallet\": \"$CALLER_WALLET\",
+    \"serviceId\": \"$SERVICE_ID\",
+    \"spendCap\": 100000000
+  }")
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | head -n -1)
+
+if [ "$HTTP_CODE" = "201" ]; then
+  pass "Authorization created for caller (HTTP 201)"
+  echo ""
+  echo "$BODY" | jq '{callerWallet, serviceId, spendCap, status}'
+else
+  fail "Authorization creation failed (HTTP $HTTP_CODE)"
+  echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+  exit 1
+fi
+
+echo ""
+
+# ── Step 5: Sign EIP-712 payment proof ───────────��───────────────────────────
+
+bold "Step 5 — Sign EIP-712 payment proof"
 dim "  Signing ReceiveWithAuthorization typed data (ERC-3009, Base Sepolia)"
 dim "  Using caller private key: ${CALLER_PRIVATE_KEY:0:8}...  wallet: $CALLER_WALLET"
 
@@ -193,9 +223,9 @@ fi
 
 echo ""
 
-# ── Step 5: Send paid request — expect 200 ──────────────────────────────��────
+# ── Step 6: Send paid request — expect 200 ──────────────────────────────��────
 
-bold "Step 5 — Paid request → 200 Access Granted"
+bold "Step 6 — Paid request → 200 Access Granted"
 dim "  GET $BASE/api/test/protected?serviceId=$SERVICE_ID"
 dim "  Headers: x-402-payment: <proof>  x-402-caller: $CALLER_WALLET"
 
@@ -222,9 +252,9 @@ echo ""
 # Upstash REST pipeline round-trips can take up to ~1s on cold connections.
 sleep 1
 
-# ── Step 6: View receipt / earnings log ──────────────────────────────────────
+# ── Step 7: View receipt / earnings log ──────────────────────────────────────
 
-bold "Step 6 — Provider receipt / earnings log"
+bold "Step 7 — Provider receipt / earnings log"
 dim "  GET $BASE/api/usage/$PROVIDER_WALLET?type=earnings"
 
 RESPONSE=$(curl -s -w "\n%{http_code}" \
@@ -251,9 +281,9 @@ fi
 
 echo ""
 
-# ── Step 7: View capability manifest JSON ────────────────────────────────────
+# ── Step 8: View capability manifest JSON ────────────────────────────────────
 
-bold "Step 7 — Capability manifest JSON"
+bold "Step 8 — Capability manifest JSON"
 dim "  GET $BASE/api/services/$SERVICE_ID/manifest"
 
 RESPONSE=$(curl -s -w "\n%{http_code}" \
@@ -277,7 +307,7 @@ echo ""
 
 bold "═════════════════��════════════════════════"
 if [ "$FAIL" -eq 0 ]; then
-  green "  ALL $PASS STEPS PASSED — provider journey complete"
+  green "  ALL $PASS STEPS PASSED — provider journey complete (8/8)"
 else
   red   "  $FAIL STEP(S) FAILED  /  $PASS passed"
 fi
