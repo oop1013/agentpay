@@ -185,6 +185,21 @@ describe("GET /api/services/:id/manifest", () => {
     expect(redisMock.hgetall).toHaveBeenCalledWith(`service:${SERVICE_ID}`);
   });
 
+  it("returns 410 Gone for a paused service with no manifest body", async () => {
+    const paused = { ...fullServiceData(), status: "paused" };
+    redisMock.hgetall.mockResolvedValue(paused);
+
+    const handler = await getManifestHandler();
+    if (!handler) throw new Error("manifest handler not found on router");
+
+    const req = makeReq({ id: SERVICE_ID });
+    const ctx = makeRes();
+    await handler(req, ctx.res, vi.fn());
+
+    expect(ctx.statusCode).toBe(410);
+    expect((ctx.body as any)?.manifestVersion).toBeUndefined();
+  });
+
   it("handles missing description gracefully (defaults to empty string)", async () => {
     const data = { ...fullServiceData(), description: "" };
     redisMock.hgetall.mockResolvedValue(data);

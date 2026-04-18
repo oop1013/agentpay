@@ -156,6 +156,11 @@ router.get("/:id/manifest", async (req: Request, res: Response) => {
     return;
   }
 
+  if (data.status === "paused") {
+    res.status(410).json({ error: "Service is paused" });
+    return;
+  }
+
   const manifest = {
     manifestVersion: "0.1.0",
     serviceId: data.id as string,
