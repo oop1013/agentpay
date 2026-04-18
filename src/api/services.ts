@@ -157,7 +157,7 @@ router.get("/:id/manifest", async (req: Request, res: Response) => {
   }
 
   if (data.status === "paused") {
-    res.status(410).json({ error: "Service is paused" });
+    res.status(410).end();
     return;
   }
 

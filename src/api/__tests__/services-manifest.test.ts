@@ -30,13 +30,14 @@ function makeReq(params: Record<string, string> = {}): Request {
   return { params, body: {}, headers: {} } as unknown as Request;
 }
 
-type ResCtx = { res: Response; statusCode: number | undefined; body: unknown };
+type ResCtx = { res: Response; statusCode: number | undefined; body: unknown; ended: boolean };
 
 function makeRes(): ResCtx {
-  const ctx: ResCtx = { res: null as unknown as Response, statusCode: undefined, body: undefined };
+  const ctx: ResCtx = { res: null as unknown as Response, statusCode: undefined, body: undefined, ended: false };
   const res = {
     status(code: number) { ctx.statusCode = code; return res; },
     json(data: unknown) { ctx.body = data; return res; },
+    end() { ctx.ended = true; return res; },
   } as unknown as Response;
   ctx.res = res;
   return ctx;
@@ -197,7 +198,8 @@ describe("GET /api/services/:id/manifest", () => {
     await handler(req, ctx.res, vi.fn());
 
     expect(ctx.statusCode).toBe(410);
-    expect((ctx.body as any)?.manifestVersion).toBeUndefined();
+    expect(ctx.body).toBeUndefined();
+    expect(ctx.ended).toBe(true);
   });
 
   it("handles missing description gracefully (defaults to empty string)", async () => {
