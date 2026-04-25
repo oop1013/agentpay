@@ -83,7 +83,7 @@ export function paywall(config: PaywallConfig) {
     // ── Step 1: Load service from Redis ──
     const serviceData = await redis.hgetall(`service:${serviceId}`);
     if (!serviceData || Object.keys(serviceData).length === 0) {
-      res.status(500).json({ error: "Service not configured" });
+      res.status(404).json({ error: "Service not found", serviceId });
       return;
     }
 
@@ -103,6 +103,9 @@ export function paywall(config: PaywallConfig) {
       res.status(402).json({
         status: 402,
         message: "Payment Required",
+        authRequired: true,
+        authorizationEndpoint: "/api/auth",
+        authMessage: "Payment proof required. If you haven't authorized this caller wallet for this service, POST to /api/auth first with {callerWallet, serviceId, spendCap}.",
         serviceId,
         serviceName: service.name,
         pricePerCall: Number(service.pricePerCall),
