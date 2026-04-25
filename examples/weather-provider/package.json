@@ -1,0 +1,20 @@
+{
+  "name": "weather-provider-example",
+  "version": "1.0.0",
+  "description": "AgentPay provider example — paywalled weather API using @agentpay88/sdk",
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts",
+    "dev": "tsx --watch server.ts"
+  },
+  "dependencies": {
+    "@agentpay88/sdk": "file:../../packages/sdk",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}
